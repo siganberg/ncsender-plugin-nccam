@@ -4,7 +4,7 @@
 import occtFactory from 'occt-import-js';
 import * as N from './core/index.js';
 
-const STEP_OPTIONS = { linearUnit: 'millimeter', linearDeflectionType: 'absolute_value', linearDeflection: 0.01, angularDeflection: 0.05 };
+const STEP_OPTIONS = { linearUnit: 'millimeter', linearDeflectionType: 'absolute_value', linearDeflection: 0.02, angularDeflection: 0.1 };
 
 export function createEngine() {
   let occt = null, raw = null, part = null, wasm = null;

@@ -67,6 +67,64 @@ export function cutMove(hm, stamp, a, b, rapid, opIndex) {
   return hit;
 }
 
+// For drawing: the same cut, with the tool at its exact position, and the
+// columns on a wall moved onto the tool's edge (hm.sx/sy, in mm). A wall then
+// follows the real curve instead of the grid's steps. A column left standing
+// goes to the edge it is nearest (hm.gap: how far outside); a cut column to
+// the edge of the cut it is deepest inside (hm.deep), which is the outer edge
+// of the whole pass, not an inner pass's. A deeper cut starts both again.
+export function edgeMap(hm) {
+  const n = hm.nx * hm.ny;
+  hm.sx = new Float32Array(n); hm.sy = new Float32Array(n);
+  hm.wx = new Float32Array(n); hm.wy = new Float32Array(n); // which way the wall faces
+  hm.gap = new Float32Array(n).fill(Infinity);
+  hm.deep = new Float32Array(n).fill(-Infinity);
+  return hm;
+}
+
+export function cutMoveExact(hm, tool, a, b, opIndex) {
+  const r = tool.diameter / 2, cell = hm.cell, rc = r / cell;
+  const n = Math.ceil(rc) + 3;
+  const tip = tool.kind === 'ball' ? (d) => r - Math.sqrt(Math.max(0, r * r - d * d))
+    : (tool.kind === 'vbit' || tool.kind === 'chamfer' || tool.kind === 'drill')
+      ? ((t) => (d) => d / t)(Math.tan(((tool.angle || (tool.kind === 'drill' ? 118 : 60)) * Math.PI) / 360))
+      : () => 0;
+  const flat = !tool.kind || tool.kind === 'flat' || tool.kind === 'surfacing';
+  const len = Math.hypot(b.x - a.x, b.y - a.y);
+  const steps = Math.max(1, Math.ceil(len / (cell * 0.5)));
+  const { h, sx, sy, wx, wy, gap, deep, nx, ny } = hm;
+  const band = 1.5 * cell;
+  for (let k = 1; k <= steps; k++) {
+    const t = k / steps;
+    const cx = (a.x + (b.x - a.x) * t - hm.x0) / cell;
+    const cy = (a.y + (b.y - a.y) * t - hm.y0) / cell;
+    const z = a.z + (b.z - a.z) * t;
+    if (z >= hm.top) continue;
+    const i0 = Math.max(0, Math.floor(cx - n)), i1 = Math.min(nx - 1, Math.ceil(cx + n));
+    const j0 = Math.max(0, Math.floor(cy - n)), j1 = Math.min(ny - 1, Math.ceil(cy + n));
+    for (let j = j0; j <= j1; j++) for (let i = i0; i <= i1; i++) {
+      const di = i - cx, dj = j - cy, dc = Math.hypot(di, dj);
+      if (dc > rc + 1.5) continue; // up to a diagonal neighbour of the edge
+      const idx = j * nx + i;
+      const d = dc * cell;
+      if (d <= r) {
+        const zz = z + tip(d);
+        if (h[idx] > zz + 1e-4) { h[idx] = zz; hm.op[idx] = opIndex + 1; gap[idx] = Infinity; deep[idx] = -Infinity; }
+        else if (h[idx] < zz - 1e-4) continue;
+        // The bottom of a wall, moved out onto the edge it is deepest inside
+        if (r - d > deep[idx]) {
+          deep[idx] = r - d;
+          if (flat && r - d < band && dc > 1e-6) { sx[idx] = (di / dc) * (r - d); sy[idx] = (dj / dc) * (r - d); wx[idx] = -di / dc; wy[idx] = -dj / dc; }
+          else { sx[idx] = 0; sy[idx] = 0; wx[idx] = 0; wy[idx] = 0; }
+        }
+      } else if (flat && h[idx] > z + 1e-4 && d - r < gap[idx]) {
+        // Just outside, still standing: the top of a wall, moved in onto it
+        gap[idx] = d - r; sx[idx] = (di / dc) * (r - d); sy[idx] = (dj / dc) * (r - d); wx[idx] = -di / dc; wy[idx] = -dj / dc;
+      }
+    }
+  }
+}
+
 // Plays a whole program; collisions lists the rapids that hit material.
 export function simulate(p, cell) {
   const hm = new HeightMap(p.stock, cell || HeightMap.cellFor(p.stock));

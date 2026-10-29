@@ -23,6 +23,19 @@ function run(type, subject, clip, fill = ClipperLib.PolyFillType.pftNonZero) {
 // material area regardless.
 export const unionEvenOdd = (paths) => run(ClipperLib.ClipType.ctUnion, paths, null, ClipperLib.PolyFillType.pftEvenOdd);
 export const union = (paths) => run(ClipperLib.ClipType.ctUnion, paths, null);
+// Many small loops (a mesh's triangles): Clipper inserts each one into a
+// sorted list, so one call with 100k triangles takes minutes. Merge in
+// batches, then merge the results the same way.
+export function unionMany(paths, batch = 256) {
+  let parts = paths;
+  while (parts.length > batch) {
+    const next = [];
+    for (let i = 0; i < parts.length; i += batch) next.push(union(parts.slice(i, i + batch)));
+    parts = next.flat();
+    if (next.length === 1) return parts;
+  }
+  return union(parts);
+}
 export const difference = (a, b) => run(ClipperLib.ClipType.ctDifference, a, b);
 export const intersection = (a, b) => run(ClipperLib.ClipType.ctIntersection, a, b);
 

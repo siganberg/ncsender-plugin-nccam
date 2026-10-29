@@ -20,6 +20,10 @@ function throughHoles(mat, bottom, flat) {
       .replace('#include <begin_vertex>', '#include <begin_vertex>\nvZ = transformed.z;\n' + (flat ? 'transformed.z = uBottom;' : ''));
     sh.fragmentShader = 'varying float vZ;\nuniform float uCut;\n' + sh.fragmentShader
       .replace('#include <clipping_planes_fragment>', '#include <clipping_planes_fragment>\nif (vZ < uCut) discard;');
+    // The top's normals always point out of the material; a wall triangle
+    // that folds over at a curve must not flip its normal, or it shows as a
+    // dark or bright streak
+    if (!flat) sh.fragmentShader = sh.fragmentShader.replace('#include <normal_fragment_begin>', THREE.ShaderChunk.normal_fragment_begin.replace('gl_FrontFacing ? 1.0 : - 1.0', '1.0'));
   };
   mat.customProgramCacheKey = () => `through-${flat}`;
 }
@@ -354,9 +358,8 @@ export class Viewer {
     return { g, edge };
   }
 
-  // Copies cut columns into the mesh; rows j0..j1 changed. What's drawn is
-  // the height softened over 3x3 columns, so a curved wall made of grid
-  // steps reads as a smooth curve; the checks use the exact heights.
+  // Copies cut columns into the mesh; rows j0..j1 changed. Columns on a
+  // wall sit on the tool's edge (hm.sx/sy), so walls follow the real curve.
   refreshStock(j0, j1, opColors) {
     const s = this.stock;
     if (!s || j1 < j0) return;
@@ -364,40 +367,50 @@ export class Viewer {
     const nx = hm.nx, ny = hm.ny, H = hm.h;
     const pos = geo.attributes.position, col = geo.attributes.color, nor = geo.attributes.normal;
     const c = new THREE.Color();
-    const a0 = Math.max(0, j0 - 1), a1 = Math.min(ny - 1, j1 + 1);
+    const a0 = Math.max(0, j0), a1 = Math.min(ny - 1, j1);
+    const step = hm.cell * 1.5;
     for (let j = a0; j <= a1; j++) for (let i = 0; i < nx; i++) {
       const k = j * nx + i;
-      let sum = 0, w = 0;
-      for (let dj = -1; dj <= 1; dj++) {
-        const jj = j + dj;
-        if (jj < 0 || jj >= ny) continue;
-        for (let di = -1; di <= 1; di++) {
-          const ii = i + di;
-          if (ii < 0 || ii >= nx) continue;
-          const wt = (di ? 1 : 2) * (dj ? 1 : 2);
-          sum += H[jj * nx + ii] * wt; w += wt;
-        }
-      }
-      pos.array[k * 3 + 2] = sum / w;
+      pos.array[k * 3] = hm.x0 + i * hm.cell + (hm.sx ? hm.sx[k] : 0);
+      pos.array[k * 3 + 1] = hm.y0 + j * hm.cell + (hm.sy ? hm.sy[k] : 0);
+      pos.array[k * 3 + 2] = H[k];
       const o = hm.op[k];
-      if (o) {
+      // The foot of a wall keeps the stock's color, so the wall is one color
+      // from top to bottom instead of bands between the two
+      const foot = hm.wx && (hm.wx[k] || hm.wy[k]) && ((i > 0 && H[k - 1] - H[k] > step) || (i < nx - 1 && H[k + 1] - H[k] > step) || (j > 0 && H[k - nx] - H[k] > step) || (j < ny - 1 && H[k + nx] - H[k] > step));
+      if (o && !foot) {
         c.copy(base).lerp(opColors[o - 1], 0.28);
         // Deeper cuts a little darker, so floors read
         c.multiplyScalar(0.82 + 0.18 * Math.max(0, Math.min(1, (H[k] - hm.bottom) / Math.max(1, hm.top - hm.bottom))));
       } else c.copy(base);
       col.array[k * 3] = c.r; col.array[k * 3 + 1] = c.g; col.array[k * 3 + 2] = c.b;
     }
-    // Normals from the drawn heights
-    const z = (i, j) => pos.array[(j * nx + i) * 3 + 2];
-    const n0 = Math.max(0, a0 - 1), n1 = Math.min(ny - 1, a1 + 1), c2 = 2 * hm.cell;
+    // Normals from the drawn points: across the row x across the column
+    const P = pos.array;
+    const n0 = Math.max(0, a0 - 1), n1 = Math.min(ny - 1, a1 + 1);
     for (let j = n0; j <= n1; j++) for (let i = 0; i < nx; i++) {
       const k = j * nx + i;
-      const dx = (z(Math.min(nx - 1, i + 1), j) - z(Math.max(0, i - 1), j)) / c2;
-      const dy = (z(i, Math.min(ny - 1, j + 1)) - z(i, Math.max(0, j - 1))) / c2;
-      const l = Math.hypot(dx, dy, 1);
-      nor.array[k * 3] = -dx / l; nor.array[k * 3 + 1] = -dy / l; nor.array[k * 3 + 2] = 1 / l;
+      // On a wall (a neighbour much higher or lower): half up, half the way
+      // the wall faces, the same all along it, so a curved wall shades evenly
+      if (hm.wx && (hm.wx[k] || hm.wy[k])) {
+        const hk = H[k];
+        if ((i > 0 && Math.abs(H[k - 1] - hk) > step) || (i < nx - 1 && Math.abs(H[k + 1] - hk) > step)
+          || (j > 0 && Math.abs(H[k - nx] - hk) > step) || (j < ny - 1 && Math.abs(H[k + nx] - hk) > step)) {
+          nor.array[k * 3] = hm.wx[k] * 0.7071; nor.array[k * 3 + 1] = hm.wy[k] * 0.7071; nor.array[k * 3 + 2] = 0.7071;
+          continue;
+        }
+      }
+      const l = (j * nx + Math.max(0, i - 1)) * 3, r = (j * nx + Math.min(nx - 1, i + 1)) * 3;
+      const d = (Math.max(0, j - 1) * nx + i) * 3, u = (Math.min(ny - 1, j + 1) * nx + i) * 3;
+      const ux = P[r] - P[l], uy = P[r + 1] - P[l + 1], uz = P[r + 2] - P[l + 2];
+      const vx = P[u] - P[d], vy = P[u + 1] - P[d + 1], vz = P[u + 2] - P[d + 2];
+      let x = uy * vz - uz * vy, y = uz * vx - ux * vz, z = ux * vy - uy * vx;
+      const len = Math.hypot(x, y, z) || 1;
+      if (z < 0) { x = -x; y = -y; z = -z; }
+      nor.array[k * 3] = x / len; nor.array[k * 3 + 1] = y / len; nor.array[k * 3 + 2] = z / len;
     }
-    pos.clearUpdateRanges(); col.clearUpdateRanges(); nor.clearUpdateRanges();
+    // Ranges add up until the next upload (three clears them after it), so a
+    // second refresh before a frame keeps the first one's rows
     pos.addUpdateRange(a0 * nx * 3, (a1 - a0 + 1) * nx * 3);
     col.addUpdateRange(a0 * nx * 3, (a1 - a0 + 1) * nx * 3);
     nor.addUpdateRange(n0 * nx * 3, (n1 - n0 + 1) * nx * 3);

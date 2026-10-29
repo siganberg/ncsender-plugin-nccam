@@ -106,10 +106,17 @@ export function plan(mesh, tools, job, limits = {}) {
   // from the top, so a face that looks down (a chamfer on the bottom edge) is
   // never cut into.
   const above = analysis.undercutArea > 0 ? overhangs(mesh) : [];
+  // The triangles' shadows meet edge to edge with rounding cracks between
+  // them (a filleted edge has thousands): grow and shrink by 2 µm to close
+  // them, or every crack becomes a pocket.
+  const sections = new Map();
   const section = (z) => {
+    if (sections.has(z)) return sections.get(z);
     const s = C.unionEvenOdd(slice(mesh, z + EPS));
     const over = above.filter((t) => t.maxZ > z + EPS).map((t) => t.loop);
-    return over.length ? C.union([...s, ...over]) : s;
+    const out = over.length ? C.offset(C.offset(C.union([...s, ...C.unionMany(over)]), 0.002), -0.002) : s;
+    sections.set(z, out);
+    return out;
   };
   const bottomSection = section(0);
   const footprint = C.union(C.regions(bottomSection).map((r) => r[0]));
@@ -162,6 +169,7 @@ export function plan(mesh, tools, job, limits = {}) {
     const zTop = levels[k - 1], zFloor = levels[k];
     const rest = C.difference(rect(stock), section(zFloor));
     for (const region of C.regions(rest)) {
+      if (C.area(region) < TINY || !C.offset(region, -0.05).length) continue; // a sliver no tool fits
       const b = C.bounds([region[0]]);
       const outer = b.minX <= stock.minX + 1e-3 || b.maxX >= stock.maxX - 1e-3 || b.minY <= stock.minY + 1e-3 || b.maxY >= stock.maxY - 1e-3;
       let over = null;

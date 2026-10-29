@@ -513,7 +513,7 @@ export function mountApp(root, host, engine) {
     const ops = p.ops.filter((o) => o.enabled && o.track);
     const cell = N.HeightMap.cellFor(p.stock, 520 * 520);
     PLAY.ops = ops;
-    PLAY.hm = new N.HeightMap(p.stock, cell);
+    PLAY.hm = N.edgeMap(new N.HeightMap(p.stock, cell));
     PLAY.colors = p.ops.map((o) => new Color(OP_COLORS[o.kind]));
     PLAY.stamps = p.ops.map((o) => N.toolStamp(o.tool, cell));
     // One list of moves with the time each one ends
@@ -570,13 +570,13 @@ export function mountApp(root, host, engine) {
     const hm = PLAY.hm, n = PLAY.cum.length;
     let j0 = Infinity, j1 = -1;
     const touch = (a, b, oi) => {
-      const rad = (S.result.plan.ops[oi].tool.diameter / 2) / hm.cell + 1;
+      const rad = (S.result.plan.ops[oi].tool.diameter / 2) / hm.cell + 3;
       const ja = Math.floor((Math.min(a.y, b.y) - hm.y0) / hm.cell - rad), jb = Math.ceil((Math.max(a.y, b.y) - hm.y0) / hm.cell + rad);
       j0 = Math.min(j0, Math.max(0, ja)); j1 = Math.max(j1, Math.min(hm.ny - 1, jb));
     };
     while (PLAY.i < n && PLAY.cum[PLAY.i] <= t) {
       const a = PLAY.cursor || moveAt(PLAY.i - 1), b = moveAt(PLAY.i), oi = PLAY.opOf[PLAY.i];
-      if (!b.r || a.z < hm.top) { N.cutMove(hm, PLAY.stamps[oi], a, b, b.r, oi); touch(a, b, oi); }
+      if (!b.r) { N.cutMoveExact(hm, S.result.plan.ops[oi].tool, a, b, oi); touch(a, b, oi); }
       PLAY.cursor = null;
       PLAY.i++;
     }
@@ -586,7 +586,7 @@ export function mountApp(root, host, engine) {
       const t0 = PLAY.cum[PLAY.i - 1], f = (t - t0) / (PLAY.cum[PLAY.i] - t0 || 1);
       const start = moveAt(PLAY.i - 1);
       const m = { x: start.x + (b.x - start.x) * f, y: start.y + (b.y - start.y) * f, z: start.z + (b.z - start.z) * f };
-      if (!b.r) { N.cutMove(hm, PLAY.stamps[oi], a, m, false, oi); touch(a, m, oi); }
+      if (!b.r) { N.cutMoveExact(hm, S.result.plan.ops[oi].tool, a, m, oi); touch(a, m, oi); }
       PLAY.cursor = m;
     }
     return [j0, j1];
@@ -622,7 +622,7 @@ export function mountApp(root, host, engine) {
   function seek(t) {
     t = Math.max(0, Math.min(PLAY.total, t));
     if (t < PLAY.t) {
-      PLAY.hm.h.fill(PLAY.hm.top); PLAY.hm.op.fill(0);
+      PLAY.hm.h.fill(PLAY.hm.top); PLAY.hm.op.fill(0); PLAY.hm.sx.fill(0); PLAY.hm.sy.fill(0); PLAY.hm.wx.fill(0); PLAY.hm.wy.fill(0); PLAY.hm.gap.fill(Infinity); PLAY.hm.deep.fill(-Infinity);
       PLAY.i = 1; PLAY.cursor = null;
       advance(t);
       viewer.refreshStock(0, PLAY.hm.ny - 1, PLAY.colors);

@@ -7,7 +7,7 @@ let occt;
 export async function loadStep(name) {
   occt ||= await require('occt-import-js')();
   const bytes = new Uint8Array(readFileSync(new URL(`./fixtures/${name}`, import.meta.url)));
-  const r = occt.ReadStepFile(bytes, { linearUnit: 'millimeter', linearDeflectionType: 'absolute_value', linearDeflection: 0.01, angularDeflection: 0.05 });
+  const r = occt.ReadStepFile(bytes, { linearUnit: 'millimeter', linearDeflectionType: 'absolute_value', linearDeflection: 0.02, angularDeflection: 0.1 });
   if (!r.success) throw new Error('STEP read failed');
   return meshFromOcct(r);
 }
