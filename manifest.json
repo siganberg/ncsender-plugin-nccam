@@ -1,0 +1,28 @@
+{
+  "id": "com.ncsender.nccam",
+  "name": "ncCAM",
+  "version": "0.1.0-beta.1",
+  "minAppVersion": "2.0.88",
+  "configUi": "config.html",
+  "author": "ncSender",
+  "description": "Turns a STEP part into G-code: finds the pockets, holes, steps and outline, picks end mills and drills from your Tool Library, sets speeds and feeds for the material, and previews the cut as material is removed. 2.5D parts cut from the top.",
+  "category": "gcode-generator",
+  "repository": "https://github.com/siganberg/ncsender-plugin-nccam",
+  "icon": "logo.png",
+  "platforms": {
+    "v2": "2.0.88",
+    "pro-v2": "2.0.149"
+  },
+  "events": [],
+  "permissions": [
+    "gcode.modify"
+  ],
+  "toolMenu": [
+    {
+      "id": "open-config",
+      "label": "ncCAM",
+      "icon": "logo.png",
+      "clientOnly": true
+    }
+  ]
+}

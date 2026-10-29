@@ -1,0 +1,20 @@
+{
+  "name": "ncsender-plugin-nccam",
+  "version": "0.1.0",
+  "description": "ncSender ncCAM plugin — turns a STEP part into G-code using the Tool Library",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "build": "node build.mjs",
+    "test": "node --test tests/*.test.js"
+  },
+  "author": "ncSender",
+  "license": "GPL-3.0",
+  "devDependencies": {
+    "clipper-lib": "^6.4.2",
+    "esbuild": "^0.28.2",
+    "occt-import-js": "^0.0.23",
+    "playwright-core": "^1.64.1",
+    "three": "^0.186.1"
+  }
+}

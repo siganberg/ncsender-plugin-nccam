@@ -1,0 +1,21 @@
+// Checks that ncCAM reopens the last part with its settings.
+import { chromium } from 'playwright-core';
+const exe = `${process.env.HOME}/Library/Caches/ms-playwright/chromium-1223/chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing`;
+const b = await chromium.launch({ executablePath: exe, args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader'] });
+const page = await b.newPage({ viewport: { width: 1920, height: 1080 } });
+page.on('pageerror', (e) => console.log('pageerror', e.message));
+await page.goto('http://localhost:8777/');
+await page.waitForSelector('[data-file]', { state: 'attached' });
+await page.setInputFiles('[data-file]', 'tests/fixtures/stepped.step');
+await page.waitForFunction(() => document.querySelector('.ncc-found .ncc-row'), null, { timeout: 60000 });
+await page.click('.ncc-foot [data-go="2"]');
+await page.click('[data-material="aluminum"]');
+await page.click('[data-zero="center"]');
+await page.waitForTimeout(1500);
+await page.click('[data-act="close"]');
+await page.reload();
+await page.waitForFunction(() => document.querySelector('.ncc-found .ncc-row'), null, { timeout: 60000 });
+console.log('file:', await page.$eval('.ncc-file-name', (e) => e.textContent));
+await page.click('.ncc-foot [data-go="2"]');
+console.log('material:', await page.$eval('[data-material].sel', (e) => e.dataset.material), 'zero:', await page.$eval('[data-zero].sel', (e) => e.dataset.zero));
+await b.close();
