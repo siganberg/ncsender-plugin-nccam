@@ -1,4 +1,4 @@
-import { partHeights } from './sim.js';
+import * as C from './clip.js';
 
 // The part as triangles: built from occt-import-js output, turned so the
 // chosen side faces up, analysed for what can be cut from the top, and
@@ -111,14 +111,14 @@ export function analyze(mesh, tol = 1e-3) {
   // under them: a chamfer or fillet on the bottom edge is just left square,
   // a sideways hole or slot can't be cut at all.
   const faceDown = undercutArea > 1e-3 * totalArea;
-  const missed = faceDown ? missedShare(mesh) : 0;
+  const m = faceDown ? missedShare(mesh) : { inside: 0, total: 0 };
   return {
     size, top,
     floors: [...floors].sort((x, y) => y - x),
-    undercut: faceDown && missed > MISSED_LIMIT,
-    squareEdges: faceDown && missed <= MISSED_LIMIT,
+    undercut: faceDown && m.inside > MISSED_LIMIT,
+    squareEdges: faceDown && m.inside <= MISSED_LIMIT,
     sloped: slopedArea > 1e-3 * totalArea,
-    undercutArea, slopedArea, missed,
+    undercutArea, slopedArea, missed: m.inside, missedTotal: m.total,
   };
 }
 
@@ -135,18 +135,81 @@ export function meshVolume(mesh) {
 }
 
 // How much more a cut from the top leaves than the part itself, as a share
-// of the part: everything under the part's top surface stays.
+// of the part: everything under the part's top surface stays. `inside`
+// leaves out a narrow band just outside the part's footprint on the bed:
+// a chamfer or rounded edge around the outside overhangs it and is only
+// left square, so it counts in `total` alone. A sideways hole, a pocket
+// that opens downwards or a wide ledge counts in both.
 export function missedShare(mesh) {
   const { min, max } = meshBounds(mesh);
   const w = max[0] - min[0], d = max[1] - min[1];
   const cell = Math.max(0.05, Math.sqrt((w * d) / 250000));
   const grid = { x0: min[0], y0: min[1], cell, nx: Math.ceil(w / cell) + 1, ny: Math.ceil(d / cell) + 1 };
-  const h = partHeights(mesh, grid);
-  let shadow = 0;
-  for (let i = 0; i < h.length; i++) if (h[i] > min[2]) shadow += h[i] - min[2];
-  shadow *= cell * cell;
-  const vol = meshVolume(mesh);
-  return vol > 0 ? Math.max(0, shadow - vol) / vol : 0;
+  const { h, mat } = columns(mesh, grid);
+  const outline = C.union(C.regions(C.unionEvenOdd(slice(mesh, min[2] + 0.01))).map((r) => r[0]));
+  const inside = footprintMask(outline, grid);
+  // An edge's overhang is narrow; a ledge wider than this counts in full
+  const band = footprintMask(C.offset(outline, Math.min(3, 0.15 * Math.min(w, d))), grid);
+  let all = 0, over = 0;
+  for (let i = 0; i < h.length; i++) {
+    if (!(h[i] > min[2])) continue;
+    const left = Math.max(0, h[i] - min[2] - mat[i]); // air under the top that stays
+    all += left;
+    if (inside[i] || !band[i]) over += left;
+  }
+  const vol = meshVolume(mesh), a = cell * cell;
+  if (!(vol > 0)) return { inside: 0, total: 0 };
+  return { inside: (over * a) / vol, total: (all * a) / vol };
+}
+
+// For each grid column: the part's top (-Infinity where there is none) and
+// how much material the column passes through (up-facing surfaces end
+// material, down-facing ones start it: their heights add up to its length).
+function columns(mesh, grid) {
+  const n = grid.nx * grid.ny;
+  const h = new Float32Array(n).fill(-Infinity), mat = new Float32Array(n);
+  const p = mesh.positions, ix = mesh.indices;
+  for (let t = 0; t < ix.length; t += 3) {
+    const a = ix[t] * 3, b = ix[t + 1] * 3, c = ix[t + 2] * 3;
+    const ax = p[a], ay = p[a + 1], az = p[a + 2], bx = p[b], by = p[b + 1], bz = p[b + 2], cx = p[c], cy = p[c + 1], cz = p[c + 2];
+    const det = (by - cy) * (ax - cx) + (cx - bx) * (ay - cy);
+    if (Math.abs(det) < 1e-12) continue;
+    // Outward normal's z has the sign of the projected area (CCW = up)
+    const up = ((bx - ax) * (cy - ay) - (by - ay) * (cx - ax)) > 0 ? 1 : -1;
+    const i0 = Math.max(0, Math.ceil((Math.min(ax, bx, cx) - grid.x0) / grid.cell)), i1 = Math.min(grid.nx - 1, Math.floor((Math.max(ax, bx, cx) - grid.x0) / grid.cell));
+    const j0 = Math.max(0, Math.ceil((Math.min(ay, by, cy) - grid.y0) / grid.cell)), j1 = Math.min(grid.ny - 1, Math.floor((Math.max(ay, by, cy) - grid.y0) / grid.cell));
+    for (let j = j0; j <= j1; j++) for (let i = i0; i <= i1; i++) {
+      // Half-open edges, so a column on a shared edge counts one triangle
+      const x = grid.x0 + (i + 0.5e-3) * grid.cell, y = grid.y0 + (j + 0.7e-3) * grid.cell;
+      const l1 = ((by - cy) * (x - cx) + (cx - bx) * (y - cy)) / det;
+      const l2 = ((cy - ay) * (x - cx) + (ax - cx) * (y - cy)) / det;
+      const l3 = 1 - l1 - l2;
+      if (l1 < 0 || l2 < 0 || l3 < 0) continue;
+      const z = l1 * az + l2 * bz + l3 * cz;
+      const k = j * grid.nx + i;
+      if (z > h[k]) h[k] = z;
+      mat[k] += up * z;
+    }
+  }
+  return { h, mat };
+}
+
+// Which grid columns lie inside the loops (even-odd, by rows).
+function footprintMask(loops, grid) {
+  const mask = new Uint8Array(grid.nx * grid.ny);
+  for (let j = 0; j < grid.ny; j++) {
+    const y = grid.y0 + j * grid.cell, xs = [];
+    for (const loop of loops) for (let k = 0; k < loop.length; k++) {
+      const [x1, y1] = loop[k], [x2, y2] = loop[(k + 1) % loop.length];
+      if ((y1 <= y) !== (y2 <= y)) xs.push(x1 + ((y - y1) / (y2 - y1)) * (x2 - x1));
+    }
+    xs.sort((p, q) => p - q);
+    for (let k = 0; k + 1 < xs.length; k += 2) {
+      const i0 = Math.max(0, Math.ceil((xs[k] - grid.x0) / grid.cell)), i1 = Math.min(grid.nx - 1, Math.floor((xs[k + 1] - grid.x0) / grid.cell));
+      for (let i = i0; i <= i1; i++) mask[j * grid.nx + i] = 1;
+    }
+  }
+  return mask;
 }
 
 // The part's section at height z: closed loops (any orientation).
@@ -212,13 +275,14 @@ export function sides(mesh) {
   const out = {};
   for (const side of Object.keys(UP_DIRECTIONS)) {
     const a = analyze(orient(mesh, side));
-    out[side] = { reachable: !a.undercut, missed: a.missed, undercutArea: a.undercutArea, slopedArea: a.slopedArea, height: a.size[2] };
+    out[side] = { reachable: !a.undercut, missed: a.missed, missedTotal: a.missedTotal, undercutArea: a.undercutArea, slopedArea: a.slopedArea, height: a.size[2] };
   }
   const order = Object.keys(UP_DIRECTIONS);
   const ranked = order.slice().sort((x, y) => {
     const a = out[x], b = out[y];
     return (a.reachable === b.reachable ? 0 : a.reachable ? -1 : 1)
       || (Math.abs(a.missed - b.missed) > 1e-4 ? a.missed - b.missed : 0)
+      || (Math.abs(a.missedTotal - b.missedTotal) > 1e-4 ? a.missedTotal - b.missedTotal : 0)
       || (Math.abs(a.slopedArea - b.slopedArea) > 1e-6 ? a.slopedArea - b.slopedArea : 0)
       || (Math.abs(a.height - b.height) > 1e-6 ? a.height - b.height : 0)
       || order.indexOf(x) - order.indexOf(y);

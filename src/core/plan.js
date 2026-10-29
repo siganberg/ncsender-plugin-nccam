@@ -92,7 +92,7 @@ export function plan(mesh, tools, job, limits = {}) {
   const fin = FINISHES[job.finish] || FINISHES.balanced;
   const warnings = [];
   if (analysis.squareEdges) warnings.push({ kind: 'edges', text: 'Chamfers or rounded edges face down on this side, so they are left square.' });
-  if (analysis.undercut) warnings.push({ kind: 'undercut', text: 'Some faces point down, so they can’t be reached from the top. Turn the part or cut it in a second setup.' });
+  if (analysis.undercut) warnings.push({ kind: 'undercut', text: 'Some features face the other side, so they can’t be reached from the top. Cut this side, then turn the part over for a second setup.' });
   if (analysis.sloped) warnings.push({ kind: 'sloped', text: 'Sloped or curved faces (chamfers, fillets) aren\u2019t cut in 3D yet, so they are left square.' });
 
   const flats = tools.filter((t) => t.kind === 'flat').sort((a, b) => b.diameter - a.diameter);

@@ -84,44 +84,58 @@ export function edgeMap(hm) {
 
 export function cutMoveExact(hm, tool, a, b, opIndex) {
   const r = tool.diameter / 2, cell = hm.cell, rc = r / cell;
-  const n = Math.ceil(rc) + 3;
   const tip = tool.kind === 'ball' ? (d) => r - Math.sqrt(Math.max(0, r * r - d * d))
     : (tool.kind === 'vbit' || tool.kind === 'chamfer' || tool.kind === 'drill')
       ? ((t) => (d) => d / t)(Math.tan(((tool.angle || (tool.kind === 'drill' ? 118 : 60)) * Math.PI) / 360))
       : () => 0;
   const flat = !tool.kind || tool.kind === 'flat' || tool.kind === 'surfacing';
+  const { h, sx, sy, wx, wy, gap, deep, nx, ny } = hm;
+  const band = 1.5 * cell, reach = rc + 1.5;
+  // One column against the tool at height z, its axis (gx, gy) away in cells
+  const visit = (idx, gx, gy, z) => {
+    const dc = Math.hypot(gx, gy);
+    if (dc > reach) return;
+    const d = dc * cell;
+    if (d <= r) {
+      const zz = z + tip(d);
+      if (h[idx] > zz + 1e-4) { h[idx] = zz; hm.op[idx] = opIndex + 1; gap[idx] = Infinity; deep[idx] = -Infinity; }
+      else if (h[idx] < zz - 1e-4) return;
+      // The bottom of a wall, moved out onto the edge it is deepest inside
+      if (r - d > deep[idx]) {
+        deep[idx] = r - d;
+        if (flat && r - d < band && dc > 1e-6) { sx[idx] = (gx / dc) * (r - d); sy[idx] = (gy / dc) * (r - d); wx[idx] = -gx / dc; wy[idx] = -gy / dc; }
+        else { sx[idx] = 0; sy[idx] = 0; wx[idx] = 0; wy[idx] = 0; }
+      }
+    } else if (flat && h[idx] > z + 1e-4 && d - r < gap[idx]) {
+      // Just outside, still standing: the top of a wall, moved in onto it
+      gap[idx] = d - r; sx[idx] = (gx / dc) * (r - d); sy[idx] = (gy / dc) * (r - d); wx[idx] = -gx / dc; wy[idx] = -gy / dc;
+    }
+  };
+  const ax = (a.x - hm.x0) / cell, ay = (a.y - hm.y0) / cell, bx = (b.x - hm.x0) / cell, by = (b.y - hm.y0) / cell;
+  if (Math.abs(b.z - a.z) < 1e-9) {
+    // Level move: the tool sweeps a capsule, every column measured from the
+    // nearest point on the path (one pass, however long the move)
+    if (a.z >= hm.top) return;
+    const vx = bx - ax, vy = by - ay, vv = vx * vx + vy * vy;
+    const i0 = Math.max(0, Math.floor(Math.min(ax, bx) - reach)), i1 = Math.min(nx - 1, Math.ceil(Math.max(ax, bx) + reach));
+    const j0 = Math.max(0, Math.floor(Math.min(ay, by) - reach)), j1 = Math.min(ny - 1, Math.ceil(Math.max(ay, by) + reach));
+    for (let j = j0; j <= j1; j++) for (let i = i0; i <= i1; i++) {
+      const t = vv > 0 ? Math.max(0, Math.min(1, ((i - ax) * vx + (j - ay) * vy) / vv)) : 0;
+      visit(j * nx + i, i - (ax + vx * t), j - (ay + vy * t), a.z);
+    }
+    return;
+  }
+  // Ramps and plunges: the tool at points along the move
   const len = Math.hypot(b.x - a.x, b.y - a.y);
   const steps = Math.max(1, Math.ceil(len / (cell * 0.5)));
-  const { h, sx, sy, wx, wy, gap, deep, nx, ny } = hm;
-  const band = 1.5 * cell;
+  const n = Math.ceil(reach);
   for (let k = 1; k <= steps; k++) {
     const t = k / steps;
-    const cx = (a.x + (b.x - a.x) * t - hm.x0) / cell;
-    const cy = (a.y + (b.y - a.y) * t - hm.y0) / cell;
-    const z = a.z + (b.z - a.z) * t;
+    const cx = ax + (bx - ax) * t, cy = ay + (by - ay) * t, z = a.z + (b.z - a.z) * t;
     if (z >= hm.top) continue;
     const i0 = Math.max(0, Math.floor(cx - n)), i1 = Math.min(nx - 1, Math.ceil(cx + n));
     const j0 = Math.max(0, Math.floor(cy - n)), j1 = Math.min(ny - 1, Math.ceil(cy + n));
-    for (let j = j0; j <= j1; j++) for (let i = i0; i <= i1; i++) {
-      const di = i - cx, dj = j - cy, dc = Math.hypot(di, dj);
-      if (dc > rc + 1.5) continue; // up to a diagonal neighbour of the edge
-      const idx = j * nx + i;
-      const d = dc * cell;
-      if (d <= r) {
-        const zz = z + tip(d);
-        if (h[idx] > zz + 1e-4) { h[idx] = zz; hm.op[idx] = opIndex + 1; gap[idx] = Infinity; deep[idx] = -Infinity; }
-        else if (h[idx] < zz - 1e-4) continue;
-        // The bottom of a wall, moved out onto the edge it is deepest inside
-        if (r - d > deep[idx]) {
-          deep[idx] = r - d;
-          if (flat && r - d < band && dc > 1e-6) { sx[idx] = (di / dc) * (r - d); sy[idx] = (dj / dc) * (r - d); wx[idx] = -di / dc; wy[idx] = -dj / dc; }
-          else { sx[idx] = 0; sy[idx] = 0; wx[idx] = 0; wy[idx] = 0; }
-        }
-      } else if (flat && h[idx] > z + 1e-4 && d - r < gap[idx]) {
-        // Just outside, still standing: the top of a wall, moved in onto it
-        gap[idx] = d - r; sx[idx] = (di / dc) * (r - d); sy[idx] = (dj / dc) * (r - d); wx[idx] = -di / dc; wy[idx] = -dj / dc;
-      }
-    }
+    for (let j = j0; j <= j1; j++) for (let i = i0; i <= i1; i++) visit(j * nx + i, i - cx, j - cy, z);
   }
 }
 

@@ -286,7 +286,7 @@ export function mountApp(root, host, engine) {
     if (!S.plan) return '';
     const w = S.plan.warnings.filter((x) => !modelStep || x.kind === 'undercut' || x.kind === 'sloped' || x.kind === 'edges');
     if (!w.length && modelStep) return `<div class="ncc-hint">${ICONS.info}<span>Everything can be cut from the top in one setup.</span></div>`;
-    return w.map((x) => `<div class="ncc-hint ${x.kind === 'undercut' || x.kind === 'notool' ? 'bad' : ''}">${x.kind === 'undercut' || x.kind === 'notool' ? ICONS.warn : ICONS.info}<span>${esc(x.text)}</span></div>`).join('');
+    return w.map((x) => `<div class="ncc-hint ${x.kind === 'notool' ? 'bad' : ''}">${x.kind === 'notool' ? ICONS.warn : ICONS.info}<span>${esc(x.text)}</span></div>`).join('');
   }
 
   function modelOverlay() {
@@ -477,7 +477,7 @@ export function mountApp(root, host, engine) {
   }
 
   // ---------- playback ----------
-  const PLAY = { ops: [], moves: null, opOf: null, cum: null, total: 0, t: 0, i: 1, playing: false, speed: 20, hm: null, stamps: [], colors: [], cursor: null };
+  const PLAY = { ops: [], moves: null, opOf: null, cum: null, total: 0, t: 0, i: 1, playing: false, speed: 5, hm: null, stamps: [], colors: [], cursor: null };
 
   function playbar() {
     if (!S.result) return '';
@@ -493,7 +493,7 @@ export function mountApp(root, host, engine) {
         </div>
         <div class="ncc-row" style="font-size: 12px; color: var(--color-text-secondary)"><span>${cur ? `Step ${ops.indexOf(cur) + 1} of ${ops.length} · ${esc(cur.label)} · T${N.toolNumber(cur.tool, S.numbering)}` : ''}</span><span class="ncc-mono">${clock(PLAY.t)} / ${clock(total)}</span></div>
       </div>
-      <div class="ncc-seg" style="padding: 3px" role="group" aria-label="Speed">${[[5, 'Slow'], [20, 'Normal'], [100, 'Fast']].map(([v, l]) => `<button type="button" style="padding: 6px 8px" class="${PLAY.speed === v ? 'sel' : ''}" data-speed="${v}">${l}</button>`).join('')}</div>`;
+      <div class="ncc-seg" style="padding: 3px" role="group" aria-label="Speed">${[[1, 'Slow'], [5, 'Normal'], [25, 'Fast']].map(([v, l]) => `<button type="button" style="padding: 6px 8px" class="${PLAY.speed === v ? 'sel' : ''}" data-speed="${v}">${l}</button>`).join('')}</div>`;
   }
 
   function previewOverlay() {
@@ -537,18 +537,35 @@ export function mountApp(root, host, engine) {
     }
     PLAY.total = t;
     PLAY.opIndexAt = (time) => { const i = Math.min(n - 1, lowerBound(PLAY.cum, time)); return ops.indexOf(p.ops[PLAY.opOf[i]]); };
-    PLAY.t = 0; PLAY.i = 1; PLAY.cursor = null; PLAY.toolOp = -1;
+    PLAY.t = 0; PLAY.i = 1; PLAY.cursor = null; PLAY.toolOp = -1; PLAY.snaps = [];
     viewer.showStock(PLAY.hm, STOCK_COLORS[p.job.material] || STOCK_COLORS.mdf, S.part);
+    // Fit the stock and everywhere a cutting edge goes (a facing bit runs
+    // well past a small part's edges), so the bit never fills the view
+    {
+      const hm = PLAY.hm, lo = [hm.x0, hm.y0, hm.bottom], hi = [hm.x0 + (hm.nx - 1) * hm.cell, hm.y0 + (hm.ny - 1) * hm.cell, hm.top];
+      for (const o of ops) {
+        const r = o.tool.diameter / 2;
+        for (let i = 0; i < o.track.length; i += 4) {
+          if (o.track[i + 3] === 0) continue;
+          lo[0] = Math.min(lo[0], o.track[i] - r); hi[0] = Math.max(hi[0], o.track[i] + r);
+          lo[1] = Math.min(lo[1], o.track[i + 1] - r); hi[1] = Math.max(hi[1], o.track[i + 1] + r);
+        }
+      }
+      viewer.frame(lo, hi);
+    }
     viewer.showPaths(ops);
     S.showPaths = S.showPaths ?? false;
     syncOverlays();
     placeTool(0);
     // Speed so the whole job plays in about 40 s at 20x
-    PLAY.speed = 20;
-    PLAY.rate = Math.max(1, PLAY.total / 40 / 20);
+    // Slow is the machine's own pace, Normal 5x, Fast 25x; a long job is
+    // sped up so Normal never takes more than 10 minutes
+    PLAY.speed = 5;
+    PLAY.rate = Math.max(1, PLAY.total / 600 / 5);
     viewer.onFrame = frame;
     runChecks(p);
-    PLAY.playing = true;
+    // Waits for Play: the uncut stock first
+    PLAY.playing = false;
     updatePlaybar();
   }
 
@@ -575,6 +592,7 @@ export function mountApp(root, host, engine) {
       j0 = Math.min(j0, Math.max(0, ja)); j1 = Math.max(j1, Math.min(hm.ny - 1, jb));
     };
     while (PLAY.i < n && PLAY.cum[PLAY.i] <= t) {
+      if (PLAY.opOf[PLAY.i] !== PLAY.opOf[PLAY.i - 1] && !PLAY.cursor) snapshot();
       const a = PLAY.cursor || moveAt(PLAY.i - 1), b = moveAt(PLAY.i), oi = PLAY.opOf[PLAY.i];
       if (!b.r) { N.cutMoveExact(hm, S.result.plan.ops[oi].tool, a, b, oi); touch(a, b, oi); }
       PLAY.cursor = null;
@@ -619,11 +637,24 @@ export function mountApp(root, host, engine) {
     else if (now - lastBar > 200) { lastBar = now; updatePlaybar(); }
   }
 
+  // The stock as it is when each operation starts, so going back only
+  // replays from the nearest one
+  const SNAP_KEYS = ['h', 'op', 'sx', 'sy', 'wx', 'wy', 'gap', 'deep'];
+  function snapshot() {
+    if (PLAY.snaps.some((sn) => sn.i === PLAY.i)) return;
+    PLAY.snaps.push({ i: PLAY.i, data: SNAP_KEYS.map((k) => PLAY.hm[k].slice()) });
+  }
+
   function seek(t) {
     t = Math.max(0, Math.min(PLAY.total, t));
     if (t < PLAY.t) {
-      PLAY.hm.h.fill(PLAY.hm.top); PLAY.hm.op.fill(0); PLAY.hm.sx.fill(0); PLAY.hm.sy.fill(0); PLAY.hm.wx.fill(0); PLAY.hm.wy.fill(0); PLAY.hm.gap.fill(Infinity); PLAY.hm.deep.fill(-Infinity);
-      PLAY.i = 1; PLAY.cursor = null;
+      const sn = PLAY.snaps.filter((x) => PLAY.cum[x.i - 1] <= t).sort((a, b) => b.i - a.i)[0];
+      if (sn) { SNAP_KEYS.forEach((k, q) => PLAY.hm[k].set(sn.data[q])); PLAY.i = sn.i; }
+      else {
+        PLAY.hm.h.fill(PLAY.hm.top); PLAY.hm.op.fill(0); PLAY.hm.sx.fill(0); PLAY.hm.sy.fill(0); PLAY.hm.wx.fill(0); PLAY.hm.wy.fill(0); PLAY.hm.gap.fill(Infinity); PLAY.hm.deep.fill(-Infinity);
+        PLAY.i = 1;
+      }
+      PLAY.cursor = null;
       advance(t);
       viewer.refreshStock(0, PLAY.hm.ny - 1, PLAY.colors);
     } else {
@@ -660,7 +691,7 @@ export function mountApp(root, host, engine) {
         : { state: 'info', text: 'Some tools have no cutting length in the Tool Library, so their depth isn’t checked.' });
       const cut = p.ops.find((o) => o.kind === 'cutout' && o.enabled);
       if (cut) items.push({ state: 'ok', text: `The cut-out goes ${mm(p.job.throughDepth)} mm into the spoilboard${p.job.tabs.enabled ? `, with ${p.job.tabs.count} tabs` : ''}` });
-      if (p.warnings.some((w) => w.kind === 'undercut')) items.push({ state: 'bad', text: 'Some of the part can’t be reached from the top.' });
+      if (p.warnings.some((w) => w.kind === 'undercut')) items.push({ state: 'info', text: 'Some features are on the other side. Cut this side, then turn the part over and make a program for that side.' });
       S.simChecks = { ok: !items.some((i) => i.state === 'bad'), items };
       render();
     }, 50);
@@ -698,7 +729,7 @@ export function mountApp(root, host, engine) {
     }
     if (d.toggle === 'tabs') { S.job.tabs.enabled = !S.job.tabs.enabled; return changed(); }
     if (d.op) { S.job.disabled[d.op] = !S.job.disabled[d.op]; return changed(); }
-    if (d.speed) { PLAY.speed = +d.speed; if (!PLAY.playing && PLAY.t >= PLAY.total) seek(0); PLAY.playing = true; return updatePlaybar(); }
+    if (d.speed) { PLAY.speed = +d.speed; return updatePlaybar(); }
     if (d.act === 'play') {
       if (PLAY.t >= PLAY.total) seek(0);
       PLAY.playing = !PLAY.playing; lastFrame = 0;
@@ -717,9 +748,15 @@ export function mountApp(root, host, engine) {
     if (!bar || !PLAY.cum) return;
     const was = PLAY.playing;
     PLAY.playing = false;
-    const at = (ev) => { const r = bar.getBoundingClientRect(); seek(((ev.clientX - r.left) / r.width) * PLAY.total); };
-    at(e);
-    const move = (ev) => at(ev);
+    // The bar is redrawn on every seek, so measure the one on screen now;
+    // at most one seek per frame while dragging
+    const at = (x) => { const r = root.querySelector('[data-scrub]').getBoundingClientRect(); if (r.width > 0) seek(((x - r.left) / r.width) * PLAY.total); };
+    at(e.clientX);
+    let pending = null;
+    const move = (ev) => {
+      if (pending === null) requestAnimationFrame(() => { const x = pending; pending = null; at(x); });
+      pending = ev.clientX;
+    };
     const up = () => { window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', up); PLAY.playing = was && PLAY.t < PLAY.total; lastFrame = 0; updatePlaybar(); };
     window.addEventListener('pointermove', move);
     window.addEventListener('pointerup', up);
@@ -793,7 +830,7 @@ export function mountApp(root, host, engine) {
 
   render();
   // For the headless checks in dev/
-  window.__nccam = { S, PLAY, viewer };
+  window.__nccam = { S, PLAY, viewer, seek: (t) => seek(t) };
 }
 
 function circle(c, n = 48) {

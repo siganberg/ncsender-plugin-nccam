@@ -11,19 +11,29 @@ export const STOCK_COLORS = {
 
 // Columns cut below the stock's bottom are holes: not drawn. With flat set,
 // the grid is drawn on the bed instead (the underside).
-function throughHoles(mat, bottom, flat) {
+function throughHoles(mat, bottom, flat, base) {
   mat.onBeforeCompile = (sh) => {
     sh.uniforms.uCut = { value: bottom - 0.05 };
+    sh.uniforms.uBase = { value: base || new THREE.Color(1, 1, 1) };
     sh.uniforms.uBottom = { value: bottom };
-    sh.vertexShader = 'varying float vZ;\nuniform float uBottom;\n' + sh.vertexShader
+    sh.vertexShader = 'varying float vZ;\nuniform float uBottom;\n' + (flat ? '' : 'attribute vec4 wall;\nvarying vec4 vWall;\n') + sh.vertexShader
       .replace('#include <beginnormal_vertex>', '#include <beginnormal_vertex>\n' + (flat ? 'objectNormal = vec3(0.0, 0.0, -1.0);' : ''))
-      .replace('#include <begin_vertex>', '#include <begin_vertex>\nvZ = transformed.z;\n' + (flat ? 'transformed.z = uBottom;' : ''));
+      .replace('#include <begin_vertex>', '#include <begin_vertex>\nvZ = transformed.z;\n' + (flat ? 'transformed.z = uBottom;' : 'vWall = wall;'));
     sh.fragmentShader = 'varying float vZ;\nuniform float uCut;\n' + sh.fragmentShader
       .replace('#include <clipping_planes_fragment>', '#include <clipping_planes_fragment>\nif (vZ < uCut) discard;');
     // The top's normals always point out of the material; a wall triangle
     // that folds over at a curve must not flip its normal, or it shows as a
     // dark or bright streak
-    if (!flat) sh.fragmentShader = sh.fragmentShader.replace('#include <normal_fragment_begin>', THREE.ShaderChunk.normal_fragment_begin.replace('gl_FrontFacing ? 1.0 : - 1.0', '1.0'));
+    // A pixel between a wall's top and foot is on the wall: its normal is the
+    // way the wall faces, smooth along it. On the top or the floor (at the
+    // highest or lowest height around) the vertex normal, which points up.
+    // Decided by height alone, so it doesn't change with the view.
+    // Walls take the stock's own color, the same all the way along (per
+    // column colors stripe where a tab leaves a ledge partway down).
+    if (!flat) sh.fragmentShader = 'varying vec4 vWall;\nuniform vec3 uBase;\n' + sh.fragmentShader
+      .replace('#include <color_fragment>', '#include <color_fragment>\nfloat onWall = dot(vWall.xy, vWall.xy) > 1e-6 ? smoothstep(0.0, 0.03, vZ - vWall.z) * smoothstep(0.0, 0.03, vWall.w - vZ) : 0.0;\ndiffuseColor.rgb = mix(diffuseColor.rgb, uBase, onWall);')
+      .replace('#include <normal_fragment_begin>', THREE.ShaderChunk.normal_fragment_begin.replace('gl_FrontFacing ? 1.0 : - 1.0', '1.0')
+      + '\nif (onWall > 0.0) normal = normalize(mix(normal, (viewMatrix * vec4(normalize(vWall.xy), 0.0, 0.0)).xyz, onWall));');
   };
   mat.customProgramCacheKey = () => `through-${flat}`;
 }
@@ -309,11 +319,14 @@ export class Viewer {
     const nor = new Float32Array(n * 3);
     for (let k = 0; k < n; k++) nor[k * 3 + 2] = 1;
     g.setAttribute('normal', new THREE.BufferAttribute(nor, 3).setUsage(THREE.DynamicDrawUsage));
+    const wall0 = new Float32Array(n * 4);
+    for (let k = 0; k < n; k++) { wall0[k * 4 + 2] = hm.h[k]; wall0[k * 4 + 3] = hm.h[k]; }
+    g.setAttribute('wall', new THREE.BufferAttribute(wall0, 4).setUsage(THREE.DynamicDrawUsage));
     g.setIndex(new THREE.BufferAttribute(idx, 1));
     // Smooth shading from the surface slope: curved walls read as curves,
     // not as stripes of grid facets
     const topMat = new THREE.MeshStandardMaterial({ vertexColors: true, flatShading: false, roughness: 0.8, metalness: stockColor === STOCK_COLORS.aluminum ? 0.5 : 0.05, side: THREE.DoubleSide });
-    throughHoles(topMat, hm.bottom, false);
+    throughHoles(topMat, hm.bottom, false, base);
     const top = new THREE.Mesh(g, topMat);
     this.content.add(top);
     this.stock = { hm, geo: g, base, sides: this.makeSides(hm, base) };
@@ -343,17 +356,24 @@ export class Viewer {
     for (let j = 1; j < hm.ny; j++) edge.push(j * hm.nx + hm.nx - 1);
     for (let i = hm.nx - 2; i >= 0; i--) edge.push((hm.ny - 1) * hm.nx + i);
     for (let j = hm.ny - 2; j >= 0; j--) edge.push(j * hm.nx);
-    const pos = new Float32Array(edge.length * 6);
+    const pos = new Float32Array(edge.length * 6), nor = new Float32Array(edge.length * 6);
     const idx = [];
+    // One side after another: front, right, back, left; each faces straight
+    // out, so a cut running off the edge doesn't stripe the side
+    const sideOf = [[0, -1], [1, 0], [0, 1], [-1, 0]];
+    const ends = [hm.nx, hm.nx + hm.ny - 1, 2 * hm.nx + hm.ny - 2];
     for (let e = 0; e < edge.length; e++) {
       const k = edge[e], x = hm.x0 + (k % hm.nx) * hm.cell, y = hm.y0 + Math.floor(k / hm.nx) * hm.cell;
       pos.set([x, y, hm.h[k], x, y, hm.bottom], e * 6);
+      const [nx, ny] = sideOf[e < ends[0] ? 0 : e < ends[1] ? 1 : e < ends[2] ? 2 : 3];
+      nor.set([nx, ny, 0, nx, ny, 0], e * 6);
       if (e < edge.length - 1) { const a = e * 2; idx.push(a, a + 1, a + 3, a, a + 3, a + 2); }
     }
     const g = new THREE.BufferGeometry();
     g.setAttribute('position', new THREE.BufferAttribute(pos, 3).setUsage(THREE.DynamicDrawUsage));
+    g.setAttribute('normal', new THREE.BufferAttribute(nor, 3));
     g.setIndex(idx);
-    const m = new THREE.Mesh(g, new THREE.MeshStandardMaterial({ color: base.clone().multiplyScalar(0.85), flatShading: true, roughness: 0.85, side: THREE.DoubleSide }));
+    const m = new THREE.Mesh(g, new THREE.MeshStandardMaterial({ color: base.clone().multiplyScalar(0.85), roughness: 0.85, side: THREE.DoubleSide }));
     this.content.add(m);
     return { g, edge };
   }
@@ -365,20 +385,28 @@ export class Viewer {
     if (!s || j1 < j0) return;
     const { hm, geo, base } = s;
     const nx = hm.nx, ny = hm.ny, H = hm.h;
-    const pos = geo.attributes.position, col = geo.attributes.color, nor = geo.attributes.normal;
+    const pos = geo.attributes.position, col = geo.attributes.color, nor = geo.attributes.normal, wall = geo.attributes.wall;
     const c = new THREE.Color();
     const a0 = Math.max(0, j0), a1 = Math.min(ny - 1, j1);
     const step = hm.cell * 1.5;
+    // Largest rise (sign 1) or drop (sign -1) to any of the 8 neighbours:
+    // a column touching a wall only across a diagonal is on it too
+    const jump = (i, j, sign) => {
+      const hk = H[j * nx + i];
+      let m = 0;
+      for (let dj = -1; dj <= 1; dj++) for (let di = -1; di <= 1; di++) {
+        const ii = i + di, jj = j + dj;
+        if ((di || dj) && ii >= 0 && jj >= 0 && ii < nx && jj < ny) m = Math.max(m, sign * (H[jj * nx + ii] - hk));
+      }
+      return m;
+    };
     for (let j = a0; j <= a1; j++) for (let i = 0; i < nx; i++) {
       const k = j * nx + i;
       pos.array[k * 3] = hm.x0 + i * hm.cell + (hm.sx ? hm.sx[k] : 0);
       pos.array[k * 3 + 1] = hm.y0 + j * hm.cell + (hm.sy ? hm.sy[k] : 0);
       pos.array[k * 3 + 2] = H[k];
       const o = hm.op[k];
-      // The foot of a wall keeps the stock's color, so the wall is one color
-      // from top to bottom instead of bands between the two
-      const foot = hm.wx && (hm.wx[k] || hm.wy[k]) && ((i > 0 && H[k - 1] - H[k] > step) || (i < nx - 1 && H[k + 1] - H[k] > step) || (j > 0 && H[k - nx] - H[k] > step) || (j < ny - 1 && H[k + nx] - H[k] > step));
-      if (o && !foot) {
+      if (o) {
         c.copy(base).lerp(opColors[o - 1], 0.28);
         // Deeper cuts a little darker, so floors read
         c.multiplyScalar(0.82 + 0.18 * Math.max(0, Math.min(1, (H[k] - hm.bottom) / Math.max(1, hm.top - hm.bottom))));
@@ -390,15 +418,16 @@ export class Viewer {
     const n0 = Math.max(0, a0 - 1), n1 = Math.min(ny - 1, a1 + 1);
     for (let j = n0; j <= n1; j++) for (let i = 0; i < nx; i++) {
       const k = j * nx + i;
-      // On a wall (a neighbour much higher or lower): half up, half the way
-      // the wall faces, the same all along it, so a curved wall shades evenly
-      if (hm.wx && (hm.wx[k] || hm.wy[k])) {
-        const hk = H[k];
-        if ((i > 0 && Math.abs(H[k - 1] - hk) > step) || (i < nx - 1 && Math.abs(H[k + 1] - hk) > step)
-          || (j > 0 && Math.abs(H[k - nx] - hk) > step) || (j < ny - 1 && Math.abs(H[k + nx] - hk) > step)) {
-          nor.array[k * 3] = hm.wx[k] * 0.7071; nor.array[k * 3 + 1] = hm.wy[k] * 0.7071; nor.array[k * 3 + 2] = 0.7071;
-          continue;
-        }
+      // On a wall (a neighbour much higher or lower): the normal points up
+      // for the top or floor, and `wall` carries the way the wall faces; the
+      // shader picks one per pixel, by how steep the triangle is
+      // wall = (facing x, y, lowest, highest of the column and its neighbours)
+      const W = wall.array, up = jump(i, j, 1), down = jump(i, j, -1);
+      W[k * 4] = 0; W[k * 4 + 1] = 0; W[k * 4 + 2] = H[k]; W[k * 4 + 3] = H[k];
+      if (hm.wx && (hm.wx[k] || hm.wy[k]) && (up > step || down > step)) {
+        W[k * 4] = hm.wx[k]; W[k * 4 + 1] = hm.wy[k]; W[k * 4 + 2] = H[k] - down; W[k * 4 + 3] = H[k] + up;
+        nor.array[k * 3] = 0; nor.array[k * 3 + 1] = 0; nor.array[k * 3 + 2] = 1;
+        continue;
       }
       const l = (j * nx + Math.max(0, i - 1)) * 3, r = (j * nx + Math.min(nx - 1, i + 1)) * 3;
       const d = (Math.max(0, j - 1) * nx + i) * 3, u = (Math.min(ny - 1, j + 1) * nx + i) * 3;
@@ -414,31 +443,36 @@ export class Viewer {
     pos.addUpdateRange(a0 * nx * 3, (a1 - a0 + 1) * nx * 3);
     col.addUpdateRange(a0 * nx * 3, (a1 - a0 + 1) * nx * 3);
     nor.addUpdateRange(n0 * nx * 3, (n1 - n0 + 1) * nx * 3);
-    pos.needsUpdate = true; col.needsUpdate = true; nor.needsUpdate = true;
+    wall.addUpdateRange(n0 * nx * 4, (n1 - n0 + 1) * nx * 4);
+    pos.needsUpdate = true; col.needsUpdate = true; nor.needsUpdate = true; wall.needsUpdate = true;
     const sp = s.sides.g.attributes.position;
     s.sides.edge.forEach((k, e) => { sp.array[e * 6 + 2] = H[k]; });
     sp.needsUpdate = true;
   }
 
+  // The bit as it sits in the spindle: cutter and a short shank, no holder,
+  // so a small part isn't hidden behind it. A surfacing bit is a short wide
+  // head on a 1/4" shank, like the real ones.
   setTool(tool, maxDepth) {
     for (const c of [...this.tool.children]) { this.tool.remove(c); c.geometry.dispose(); c.material.dispose(); }
     const r = tool.diameter / 2;
-    const flute = Math.max(tool.fluteLength || 0, Math.min(40, Math.max(maxDepth + 3, tool.diameter * 2)));
+    const wide = tool.kind === 'surfacing' || r > 6.35;
+    const flute = wide ? Math.max(maxDepth + 1, Math.min(8, r * 0.5)) : Math.max(tool.fluteLength || 0, Math.min(25, Math.max(maxDepth + 3, tool.diameter * 2)));
     const metal = new THREE.MeshStandardMaterial({ color: 0xd5dbe1, metalness: 0.85, roughness: 0.3 });
     let tip;
     if (tool.kind === 'vbit' || tool.kind === 'chamfer' || tool.kind === 'drill') {
       const h = r / Math.tan(((tool.kind === 'drill' ? 118 : 60) * Math.PI) / 360);
-      tip = new THREE.Mesh(new THREE.ConeGeometry(r, h, 32), metal);
+      tip = new THREE.Mesh(new THREE.ConeGeometry(r, h, 48), metal);
       tip.rotation.x = -Math.PI / 2; tip.position.z = h / 2;
     } else {
-      tip = new THREE.Mesh(new THREE.CylinderGeometry(r, r, flute, 32), metal);
+      tip = new THREE.Mesh(new THREE.CylinderGeometry(r, r, flute, 64), metal);
       tip.rotation.x = Math.PI / 2; tip.position.z = flute / 2;
     }
-    const shank = new THREE.Mesh(new THREE.CylinderGeometry(Math.max(r, 3.175), Math.max(r, 3.175), 22, 32), new THREE.MeshStandardMaterial({ color: 0xaab3bc, metalness: 0.8, roughness: 0.35 }));
-    shank.rotation.x = Math.PI / 2; shank.position.z = flute + 11;
-    const nut = new THREE.Mesh(new THREE.CylinderGeometry(Math.max(r, 3.175) * 3.2, Math.max(r, 3.175) * 2.6, 18, 40), new THREE.MeshStandardMaterial({ color: 0x3b4655, metalness: 0.6, roughness: 0.4 }));
-    nut.rotation.x = Math.PI / 2; nut.position.z = flute + 22 + 9;
-    this.tool.add(tip, shank, nut);
+    const sr = wide ? 3.175 : Math.max(r, Math.min(3.175, r * 1.5));
+    const shankLen = 20;
+    const shank = new THREE.Mesh(new THREE.CylinderGeometry(sr, sr, shankLen, 32), new THREE.MeshStandardMaterial({ color: 0xaab3bc, metalness: 0.8, roughness: 0.35 }));
+    shank.rotation.x = Math.PI / 2; shank.position.z = flute + shankLen / 2;
+    this.tool.add(tip, shank);
   }
 
   moveTool(x, y, z) { this.tool.position.set(x, y, z); }
