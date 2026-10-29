@@ -1,5 +1,5 @@
 ## What's Changed
 
 ### 🐛 Bug Fixes
-- Parts with fillets now open much faster
-- Curves in the material-removal simulation now look smooth instead of jagged
+- Parts that need machining from both sides now load correctly
+- The material-removal preview now runs more smoothly, with steadier, less jittery motion
