@@ -1,4 +1,4 @@
-## ncCAM 0.1.0-beta.1 (first beta)
+## ncCAM 0.1.0 (beta)
 
 Turn a STEP part into G-code right inside ncSender, using the tools in your Tool Library.
 
