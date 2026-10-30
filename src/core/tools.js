@@ -30,11 +30,37 @@ export function toolKind(tool) {
 }
 
 // The T number M6 asks for: Settings -> Tool Changer -> Tool Numbering picks
-// the Tool ID or the magazine slot. A tool with no slot is called by its Tool
-// ID either way and changed by hand.
+// the Tool ID or the magazine slot. `numbering` is 'toolId', 'slot', or what
+// makeNumbering returns.
 export function toolNumber(tool, numbering) {
-  if (numbering === 'toolId') return tool.toolId ?? tool.id;
-  return tool.toolNumber ?? tool.toolId ?? tool.id;
+  const mode = typeof numbering === 'string' ? numbering : numbering?.mode;
+  if (mode === 'toolId') return tool.toolId ?? tool.id;
+  if (tool.toolNumber) return tool.toolNumber;
+  return numbering?.manual?.get(tool.id) ?? tool.toolId ?? tool.id;
+}
+
+// Slot numbering reads T<n> as slot n, and a number past the magazine as a
+// change by hand. A tool in no slot gets a number of its own past the
+// magazine: its Tool ID when that is free, else the next free one. Never a
+// number inside the magazine, which would load the tool in that slot.
+export function makeNumbering(mode, tools, slots = 0, probe = null) {
+  if (mode === 'toolId') return { mode };
+  const taken = new Set(tools.filter((t) => t.toolNumber).map((t) => t.toolNumber));
+  for (let n = 1; n <= slots; n++) taken.add(n);
+  if (probe) taken.add(probe);
+  const manual = new Map();
+  const loose = tools.filter((t) => !t.toolNumber);
+  for (const t of loose) {
+    const id = t.toolId ?? t.id;
+    if (id > slots && !taken.has(id)) { manual.set(t.id, id); taken.add(id); }
+  }
+  let next = slots + 1;
+  for (const t of loose) {
+    if (manual.has(t.id)) continue;
+    while (taken.has(next)) next++;
+    manual.set(t.id, next); taken.add(next);
+  }
+  return { mode, manual };
 }
 
 export function normalizeTools(list) {

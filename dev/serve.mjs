@@ -18,10 +18,11 @@ createServer((req, res) => {
     if (!f || f.includes('..') || !existsSync(f)) { res.writeHead(404); return res.end(); }
     res.writeHead(200, { 'Content-Type': 'application/octet-stream' }); return res.end(readFileSync(f));
   }
-  if (p === '/api/settings') return json(res, { unitsPreference: 'metric', safeZHeight: -5, tool: { numbering: 'slot' } });
+  if (p === '/api/settings') return json(res, { unitsPreference: process.env.UNITS || 'metric', safeZHeight: -5, tool: { numbering: 'slot' } });
   if (p === '/api/tools') return json(res, LIBRARY);
   if (p === '/api/firmware') return json(res, { settings: { 30: { value: '24000' }, 110: { value: '5000' }, 111: { value: '5000' }, 130: { value: '800' }, 131: { value: '800' }, 132: { value: '150' } } });
   if (p === '/api/server-state') return json(res, { machineState: { connected: true, tool: 1 } });
+  if (p === '/api/gcode-files') return json(res, { tree: [{ type: 'folder', path: 'ncCAM', children: [...saved.keys()].map((k) => ({ type: 'file', path: k })) }] });
   if (p === '/api/gcode-files/file') { if (saved.has(url.searchParams.get('path'))) return json(res, {}); res.writeHead(404); return res.end(); }
   if (p === '/api/gcode-files/load-temp' || p === '/api/gcode-files/file/save') {
     let body = '';

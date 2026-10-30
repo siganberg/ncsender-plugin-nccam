@@ -10,6 +10,7 @@
 import { analyze, slice, triangleNormal } from './mesh.js';
 import * as C from './clip.js';
 import { feeds, FINISHES, tabDefaults } from './tools.js';
+import { len, num } from './units.js';
 
 const EPS = 0.01;
 const TINY = 0.05; // mm²: smaller leftovers are not worth a tool
@@ -87,6 +88,7 @@ const fluteOk = (tool, depth) => !tool.fluteLength || tool.fluteLength + 1e-6 >=
 const fmt = (v) => (Math.round(v * 10) / 10).toString();
 
 export function plan(mesh, tools, job, limits = {}) {
+  const L = (v) => len(v, job.units), n = (v) => num(v, job.units);
   const analysis = analyze(mesh);
   const stock = stockBox(analysis, job);
   const fin = FINISHES[job.finish] || FINISHES.balanced;
@@ -151,7 +153,7 @@ export function plan(mesh, tools, job, limits = {}) {
   // 1. Flatten the top when the stock is taller than the part.
   if (stock.top > analysis.top + EPS) {
     const tool = surfacers[0] || flats[0];
-    if (tool) add({ id: 'face', kind: 'face', label: 'Flatten the top', tool: take(tool), zTop: stock.top, zBottom: analysis.top, region: rect(stock), detail: `${fmt(stock.top - analysis.top)} mm off the top` });
+    if (tool) add({ id: 'face', kind: 'face', label: 'Flatten the top', tool: take(tool), zTop: stock.top, zBottom: analysis.top, region: rect(stock), detail: `${L(stock.top - analysis.top)} off the top` });
   }
 
   // 2. Bands from the top down.
@@ -193,9 +195,9 @@ export function plan(mesh, tools, job, limits = {}) {
     {
       if (outer) {
         const tool = roughTool(C.intersection(region, C.offset(over, 13)), depth, fin.allowance);
-        if (!tool) { warnings.push({ kind: 'notool', text: `A step ${fmt(zTop - zFloor)} mm deep has no end mill that fits.` }); continue; }
+        if (!tool) { warnings.push({ kind: 'notool', text: `A step ${L(zTop - zFloor)} deep has no end mill that fits.` }); continue; }
         const area = C.intersection(region, C.offset(over, tool.diameter + 0.5));
-        add({ kind: 'step', label: 'Cut the step', tool: take(tool), zTop, zBottom, region: area, walls: region, detail: `${fmt(zTop - zFloor)} mm deep` });
+        add({ kind: 'step', label: 'Cut the step', tool: take(tool), zTop, zBottom, region: area, walls: region, detail: `${L(zTop - zFloor)} deep` });
         continue;
       }
       const circle = asCircle(region);
@@ -208,14 +210,14 @@ export function plan(mesh, tools, job, limits = {}) {
       }
       const bb = C.bounds([region[0]]);
       const tool = roughTool(region, depth, fin.allowance);
-      const what = `${fmt(bb.maxX - bb.minX)} × ${fmt(bb.maxY - bb.minY)} mm · ${through ? 'through' : `${fmt(zTop - zFloor)} mm deep`}`;
+      const what = `${n(bb.maxX - bb.minX)} × ${L(bb.maxY - bb.minY)} · ${through ? 'through' : `${L(zTop - zFloor)} deep`}`;
       if (!tool) { warnings.push({ kind: 'notool', text: `No end mill fits the pocket ${what}.` }); continue; }
       const op = add({ kind: 'pocket', label: through ? 'Cut the opening' : 'Clear the pocket', tool: take(tool), zTop, zBottom, region, detail: what });
       const corners = cornerTool(region, tool, depth);
       if (corners && corners.tool) {
         add({ kind: 'corners', label: 'Clean the corners', tool: take(corners.tool), zTop, zBottom, region, after: op.id, detail: `Corners too tight for ${tool.name}` });
       } else if (corners) {
-        warnings.push({ kind: 'corners', text: `Pocket corners stay rounded to ${fmt(tool.diameter / 2)} mm: no smaller end mill in your library.` });
+        warnings.push({ kind: 'corners', text: `Pocket corners stay rounded to ${L(tool.diameter / 2)}: no smaller end mill in your library.` });
       }
     }
   }
@@ -224,7 +226,7 @@ export function plan(mesh, tools, job, limits = {}) {
   for (const h of holes.values()) {
     const n = h.centers.length;
     const depth = h.zTop - h.zBottom;
-    const what = `Ø${fmt(h.d)} mm ${h.through ? 'through' : `${fmt(h.zTop - h.zBottom)} mm deep`}`;
+    const what = `Ø${L(h.d)} ${h.through ? 'through' : `${L(h.zTop - h.zBottom)} deep`}`;
     const drill = drills.find((t) => sameD(t.diameter, h.d) && fluteOk(t, depth));
     if (drill) {
       add({ kind: 'drill', label: n > 1 ? `Drill ${n} holes` : 'Drill the hole', tool: take(drill), zTop: h.zTop, zBottom: h.zBottom, centers: h.centers, detail: what });
@@ -247,8 +249,8 @@ export function plan(mesh, tools, job, limits = {}) {
     const fits = flats.filter((t) => fluteOk(t, depth) && t.diameter <= maxD);
     const tool = fits.find((t) => used.has(t.id)) || fits.slice().sort((a, b) => Math.abs(a.diameter - 6.35) - Math.abs(b.diameter - 6.35))[0];
     const tabs = job.tabs.enabled ? `${job.tabs.count} tabs` : 'no tabs';
-    if (tool) add({ id: 'cutout', kind: 'cutout', label: 'Cut out the part', tool: take(tool), zTop: analysis.top, zBottom: -job.throughDepth, region: footprint, detail: `${fmt(analysis.top)} mm · ${tabs}` });
-    else warnings.push({ kind: 'notool', text: `No end mill is long enough to cut out the part (${fmt(depth)} mm).` });
+    if (tool) add({ id: 'cutout', kind: 'cutout', label: 'Cut out the part', tool: take(tool), zTop: analysis.top, zBottom: -job.throughDepth, region: footprint, detail: `${L(analysis.top)} · ${tabs}` });
+    else warnings.push({ kind: 'notool', text: `No end mill is long enough to cut out the part (${L(depth)}).` });
   }
 
   // The same pocket more than once (five slots) is one operation over all

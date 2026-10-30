@@ -8,7 +8,6 @@ const STEPS = ['Model', 'Stock & Zero', 'Operations', 'Preview & Load'];
 const SIDES = [['top', 'Top'], ['bottom', 'Bottom'], ['front', 'Front'], ['back', 'Back'], ['left', 'Left'], ['right', 'Right']];
 
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-const mm = (v, d = 1) => `${(Math.round(v * 10 ** d) / 10 ** d).toLocaleString()}`;
 const clock = (sec) => { const s = Math.max(0, Math.round(sec)); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`; };
 
 const svg = (body, size = 18, extra = '') => `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" ${extra}>${body}</svg>`;
@@ -52,12 +51,17 @@ export function mountApp(root, host, engine) {
     step: 1, maxStep: 1,
     fileName: '', loading: '', error: '',
     up: 'top', analysis: null, part: null,
-    tools: [], numbering: 'slot', safeZ: null, connected: false,
+    tools: [], numbering: 'slot', safeZ: null, connected: false, units: 'mm',
     limits: {}, travel: null,
     job: null, plan: null, planning: false, result: null, simChecks: null,
     toast: '',
   };
   const viewer = new Viewer();
+  // A slot past the magazine is still a change by hand
+  const inMagazine = (t) => !!t.toolNumber && (!S.slots || t.toolNumber <= S.slots);
+  // Sizes in the user's units (ncSender's Units setting); mm inside
+  const n = (v, d) => N.units.num(v, S.units, d);
+  const L = (v, d) => N.units.len(v, S.units, d);
   let planSeq = 0;
 
   // ---------- startup ----------
@@ -68,10 +72,14 @@ export function mountApp(root, host, engine) {
       api.get('/api/firmware').catch(() => null),
       api.get('/api/server-state').catch(() => null),
     ]);
+    S.units = N.units.unitsFrom(settings?.unitsPreference);
     S.numbering = settings?.tool?.numbering === 'toolId' ? 'toolId' : 'slot';
+    S.slots = Math.max(0, Number(settings?.tool?.count) || 0);
+    const probe = settings?.tool?.probe ? Number(settings?.tool?.probeToolNumber) || 99 : null;
     const sz = Number(settings?.safeZHeight);
     S.safeZ = Number.isFinite(sz) ? sz : null;
     S.tools = N.normalizeTools(Array.isArray(tools) ? tools : tools?.tools);
+    S.numbering = N.makeNumbering(S.numbering, S.tools, S.slots, probe);
     const fs = fw?.settings || {};
     const val = (k) => { const v = parseFloat(fs[k]?.value); return Number.isFinite(v) && v > 0 ? v : null; };
     S.limits = { maxRpm: val('30') || undefined, minRpm: val('31') || undefined, maxFeed: Math.min(val('110') || Infinity, val('111') || Infinity, Infinity) };
@@ -166,7 +174,7 @@ export function mountApp(root, host, engine) {
     render();
     try {
       const r = await engine('plan', {
-        tools: S.tools, job: S.job, limits: S.limits, paths,
+        tools: S.tools, job: { ...S.job, units: S.units }, limits: S.limits, paths,
         gcodeOptions: { name: S.fileName, numbering: S.numbering, safeZHeightMm: S.safeZ },
         timing: { maxRapid: S.maxRapid || 5000 },
       });
@@ -266,7 +274,7 @@ export function mountApp(root, host, engine) {
           <div style="display: flex; align-items: center; gap: 12px; min-width: 0">
             <div class="ncc-drop-icon" style="width: 38px; height: 38px; border-radius: 10px">${ICONS.part}</div>
             <div style="min-width: 0"><div class="ncc-file-name">${esc(S.fileName)}</div>
-            <div class="ncc-file-sub ncc-mono">${a ? `${mm(a.size[0])} × ${mm(a.size[1])} × ${mm(a.size[2])} mm` : '&nbsp;'}</div></div>
+            <div class="ncc-file-sub ncc-mono">${a ? `${n(a.size[0])} × ${n(a.size[1])} × ${L(a.size[2])}` : '&nbsp;'}</div></div>
           </div>
           <label class="ncc-btn muted" style="white-space: nowrap">Open another file<input type="file" accept=".step,.stp,.STEP,.STP" data-file hidden></label>
         </div>
@@ -303,7 +311,7 @@ export function mountApp(root, host, engine) {
 
   function featureName(o) {
     const d = o.detail.replace(/ · spiral$/, '');
-    if (o.kind === 'cutout') return `Outline, ${mm(o.zTop)} mm cut-out`;
+    if (o.kind === 'cutout') return `Outline, ${L(o.zTop)} cut-out`;
     if (o.kind === 'hole' || o.kind === 'drill') return `${o.centers.length > 1 ? `${o.centers.length} holes` : 'Hole'}, ${d}`;
     if (o.kind === 'step') return `Step, ${d}`;
     return `Pocket, ${d.split(' · ').pop()}`;
@@ -356,17 +364,17 @@ export function mountApp(root, host, engine) {
   function stepStock() {
     const j = S.job, st = S.plan?.stock || N.stockBox(S.analysis, j);
     const mats = Object.entries(N.MATERIALS).map(([k, m]) => `<button class="ncc-pick ncc-mat ${j.material === k ? 'sel' : ''}" type="button" data-material="${k}"><span class="ncc-mat-swatch" style="background: ${STOCK_COLORS[k]}"></span>${esc(m.name)}<small>${esc(m.note)}</small></button>`).join('');
-    const field = (key, label, value) => `<div class="ncc-field"><label for="ncc-${key}">${label}</label><input id="ncc-${key}" class="ncc-input ncc-mono" inputmode="decimal" data-stock="${key}" value="${Math.round(value * 100) / 100}" ${j.stock.fit ? 'disabled' : ''}></div>`;
+    const field = (key, label, value) => `<div class="ncc-field"><label for="ncc-${key}">${label}</label><input id="ncc-${key}" class="ncc-input ncc-mono" inputmode="decimal" data-stock="${key}" value="${S.units === 'in' ? Math.round(value / N.units.INCH * 1000) / 1000 : Math.round(value * 100) / 100}" ${j.stock.fit ? 'disabled' : ''}></div>`;
     // Two even columns: what the stock is on the left, where zero is on the right
     return `
       <div class="ncc-col ncc-half">
         <div class="ncc-card ncc-mat-card"><div class="ncc-label">Material</div><div class="ncc-picks ncc-mats">${mats}</div></div>
         <div class="ncc-card">
-          ${toggleRow('fit', 'Size the stock to the part', `Adds ${mm(j.stock.margin)} mm on every side and ${mm(j.stock.extraTop)} mm on top`, j.stock.fit)}
-          <div class="ncc-fields">${field('width', 'Width X (mm)', st.width)}${field('depth', 'Depth Y (mm)', st.depth)}${field('thickness', 'Thickness Z (mm)', st.thickness)}</div>
+          ${toggleRow('fit', 'Size the stock to the part', `Adds ${L(j.stock.margin)} on every side and ${L(j.stock.extraTop)} on top`, j.stock.fit)}
+          <div class="ncc-fields">${field('width', `Width X (${S.units})`, st.width)}${field('depth', `Depth Y (${S.units})`, st.depth)}${field('thickness', `Thickness Z (${S.units})`, st.thickness)}</div>
         </div>
         <div class="ncc-card">
-          ${toggleRow('tabs', 'Leave tabs to hold the part', j.tabs.enabled ? `${mm(tabSize().height)} \u00d7 ${mm(tabSize().length)} mm, so the part stays put until you cut it free` : 'The part comes loose at the end', j.tabs.enabled)}
+          ${toggleRow('tabs', 'Leave tabs to hold the part', j.tabs.enabled ? `${n(tabSize().height)} \u00d7 ${L(tabSize().length)}, so the part stays put until you cut it free` : 'The part comes loose at the end', j.tabs.enabled)}
           ${j.tabs.enabled ? `<div class="ncc-row"><span class="ncc-row-title" style="font-weight: 500">Number of tabs</span><div class="ncc-stepper"><button type="button" data-tabs="-1" aria-label="Fewer tabs" ${j.tabs.count <= 1 ? 'disabled' : ''}>\u2212</button><span class="ncc-mono">${j.tabs.count}</span><button type="button" data-tabs="1" aria-label="More tabs" ${j.tabs.count >= 12 ? 'disabled' : ''}>+</button></div></div>
           ${tabStepper('height', 'Tab thickness', 'Thinner tabs', 'Thicker tabs')}
           ${tabStepper('length', 'Tab length', 'Shorter tabs', 'Longer tabs')}` : ''}
@@ -391,16 +399,17 @@ export function mountApp(root, host, engine) {
 
   // Tab size: the job's, or the material's defaults (older saved jobs)
   const tabSize = () => ({ ...N.tabDefaults(S.job.material), ...Object.fromEntries(['height', 'length'].filter((k) => S.job.tabs[k] != null).map((k) => [k, S.job.tabs[k]])) });
-  const TAB_MIN = 0.5, TAB_MAX = 10, TAB_STEP = 0.5;
+  // Steps of 0.5 mm, or 0.02 in on a 0.01 in grid
+  const tab = () => (S.units === 'in' ? { min: 0.508, max: 10.16, step: 0.508, grid: 0.254 } : { min: 0.5, max: 10, step: 0.5, grid: 0.1 });
   function tabStepper(key, title, less, more) {
     const v = tabSize()[key];
-    return `<div class="ncc-row"><span class="ncc-row-title" style="font-weight: 500">${title}</span><div class="ncc-stepper"><button type="button" data-tabsize="${key}" data-by="-1" aria-label="${less}" ${v <= TAB_MIN ? 'disabled' : ''}>\u2212</button><span class="ncc-mono">${mm(v)} mm</span><button type="button" data-tabsize="${key}" data-by="1" aria-label="${more}" ${v >= TAB_MAX ? 'disabled' : ''}>+</button></div></div>`;
+    return `<div class="ncc-row"><span class="ncc-row-title" style="font-weight: 500">${title}</span><div class="ncc-stepper"><button type="button" data-tabsize="${key}" data-by="-1" aria-label="${less}" ${v <= tab().min + 1e-6 ? 'disabled' : ''}>\u2212</button><span class="ncc-mono">${L(v, S.units === 'in' ? 2 : 1)}</span><button type="button" data-tabsize="${key}" data-by="1" aria-label="${more}" ${v >= tab().max - 1e-6 ? 'disabled' : ''}>+</button></div></div>`;
   }
 
   // The zero picker is the 3D view (showZeroView); this is its slot
   function zeroPicker(st) {
     return `<div class="ncc-zero"><div data-viewer></div></div>
-      <div class="ncc-row-sub ncc-mono" style="text-align: center; margin: 0">${mm(st.width)} \u00d7 ${mm(st.depth)} \u00d7 ${mm(st.thickness)} mm stock \u00b7 tap a point for zero, an arrow to turn the part</div>`;
+      <div class="ncc-row-sub ncc-mono" style="text-align: center; margin: 0">${n(st.width)} \u00d7 ${n(st.depth)} \u00d7 ${L(st.thickness)} stock \u00b7 tap a point for zero, an arrow to turn the part</div>`;
   }
 
   let shownZero = null;
@@ -442,11 +451,11 @@ export function mountApp(root, host, engine) {
     const pair = `<div class="ncc-pair">
           <div class="ncc-card"><div class="ncc-label">Finish</div>
             <div class="ncc-seg" role="group" aria-label="Finish">${Object.entries(N.FINISHES).map(([k, v]) => `<button type="button" class="${S.job.finish === k ? 'sel' : ''}" data-finish="${k}">${v.name}</button>`).join('')}</div>
-            <div class="ncc-row-sub">${{ fast: 'Bigger steps, no finishing pass.', balanced: 'Leaves 0.2 mm on the walls, then a clean finishing pass.', smooth: 'Lighter steps and a finishing pass, for the best walls.' }[S.job.finish]}</div>
-            ${f ? `<div class="ncc-mono ncc-row-sub" style="line-height: 1.6">${esc(mainOp.tool.name)}<br>${esc(N.MATERIALS[S.job.material].name)} \u00b7 ${f.rpm.toLocaleString()} RPM<br>${f.feed.toLocaleString()} mm/min \u00b7 ${mm(f.stepdown, 2)} mm per pass</div>` : ''}
+            <div class="ncc-row-sub">${{ fast: 'Bigger steps, no finishing pass.', balanced: `Leaves ${L(0.2, S.units === 'in' ? 3 : 1)} on the walls, then a clean finishing pass.`, smooth: 'Lighter steps and a finishing pass, for the best walls.' }[S.job.finish]}</div>
+            ${f ? `<div class="ncc-mono ncc-row-sub" style="line-height: 1.6">${esc(mainOp.tool.name)}<br>${esc(N.MATERIALS[S.job.material].name)} \u00b7 ${f.rpm.toLocaleString()} RPM<br>${S.units === 'in' ? `${n(f.feed, 1)} in/min` : `${f.feed.toLocaleString()} mm/min`} \u00b7 ${L(f.stepdown, S.units === 'in' ? 3 : 2)} per pass</div>` : ''}
           </div>
           <div class="ncc-card"><div class="ncc-label">Tools for this job</div>
-            ${used.map((t) => `<div class="ncc-row"><span style="min-width: 0"><span class="ncc-mono" style="color: var(--color-accent)">T${N.toolNumber(t, S.numbering)}</span> ${esc(t.name)}</span><span class="ncc-slot ${t.toolNumber ? '' : 'hand'}">${t.toolNumber ? `Slot ${t.toolNumber}` : 'By hand'}</span></div>`).join('') || '<div class="ncc-row-sub">No operations switched on.</div>'}
+            ${used.map((t) => `<div class="ncc-row"><span style="min-width: 0"><span class="ncc-mono" style="color: var(--color-accent)">T${N.toolNumber(t, S.numbering)}</span> ${esc(t.name)}</span><span class="ncc-slot ${inMagazine(t) ? '' : 'hand'}">${inMagazine(t) ? `Slot ${t.toolNumber}` : 'By hand'}</span></div>`).join('') || '<div class="ncc-row-sub">No operations switched on.</div>'}
             ${used.some((t) => !t.toolNumber) ? `<div class="ncc-row-sub">By hand: not in the magazine, so you\u2019ll be asked to load it.</div>` : ''}
           </div>
         </div>`;
@@ -529,7 +538,7 @@ export function mountApp(root, host, engine) {
           ${ops.map((o) => `<i style="width: ${((o.seconds || 0) / total) * 100}%; background: ${OP_COLORS[o.kind]}"></i>`).join('')}
           <b style="width: ${(PLAY.t / total) * 100}%"></b><em style="left: ${(PLAY.t / total) * 100}%"></em>
         </div>
-        <div class="ncc-row" style="font-size: 12px; color: var(--color-text-secondary)"><span>${cur ? `Step ${ops.indexOf(cur) + 1} of ${ops.length} · ${esc(cur.label)} · T${N.toolNumber(cur.tool, S.numbering)}` : ''}</span><span class="ncc-mono">${clock(PLAY.t)} / ${clock(total)}</span></div>
+        <div class="ncc-row" style="font-size: 12px; color: var(--color-text-secondary)"><span data-pb="step">${stepText(ops, cur)}</span><span class="ncc-mono" data-pb="clock">${clock(PLAY.t)} / ${clock(total)}</span></div>
       </div>
       <div class="ncc-seg" style="padding: 3px" role="group" aria-label="Speed">${[[1, 'Slow'], [5, 'Normal'], [25, 'Fast']].map(([v, l]) => `<button type="button" style="padding: 6px 8px" class="${PLAY.speed === v ? 'sel' : ''}" data-speed="${v}">${l}</button>`).join('')}</div>`;
   }
@@ -704,9 +713,29 @@ export function mountApp(root, host, engine) {
     updatePlaybar();
   }
 
+  const stepText = (ops, cur) => (cur ? `Step ${ops.indexOf(cur) + 1} of ${ops.length} · ${esc(cur.label)} · T${N.toolNumber(cur.tool, S.numbering)}` : '');
+
+  // Built once per program, then only the moving parts change: replacing
+  // the buttons every frame lost clicks that pressed one copy and released
+  // on the next.
   function updatePlaybar() {
     const bar = root.querySelector('[data-playbar]');
-    if (bar) bar.innerHTML = playbar();
+    if (!bar) return;
+    if (bar._result !== S.result || bar._total !== PLAY.total || !bar.querySelector('[data-scrub]')) { bar.innerHTML = playbar(); bar._result = S.result; bar._total = PLAY.total; return; }
+    const ops = S.result.plan.ops.filter((o) => o.enabled && o.track);
+    const total = PLAY.total || 1, pct = `${(PLAY.t / total) * 100}%`;
+    const cur = ops[Math.max(0, PLAY.opIndexAt?.(PLAY.t) ?? 0)];
+    const scrub = bar.querySelector('[data-scrub]');
+    scrub.querySelector('b').style.width = pct;
+    scrub.querySelector('em').style.left = pct;
+    scrub.setAttribute('aria-valuenow', String(Math.round(PLAY.t)));
+    const set = (el, v) => { if (el && el.innerHTML !== v) el.innerHTML = v; };
+    set(bar.querySelector('[data-pb="step"]'), stepText(ops, cur));
+    set(bar.querySelector('[data-pb="clock"]'), `${clock(PLAY.t)} / ${clock(total)}`);
+    const play = bar.querySelector('[data-act="play"]');
+    const label = PLAY.playing ? 'Pause' : 'Play';
+    if (play.getAttribute('aria-label') !== label) { play.setAttribute('aria-label', label); play.innerHTML = PLAY.playing ? ICONS.pause : ICONS.play; }
+    for (const btn of bar.querySelectorAll('[data-speed]')) btn.classList.toggle('sel', +btn.dataset.speed === PLAY.speed);
   }
 
   // The whole program cut once, up front, for the checks.
@@ -721,14 +750,14 @@ export function mountApp(root, host, engine) {
         : { state: 'ok', text: 'No fast moves through the material' });
       if (S.travel) {
         const fits = p.stock.width <= S.travel.x && p.stock.depth <= S.travel.y;
-        items.push(fits ? { state: 'ok', text: 'The stock fits inside your machine’s travel' } : { state: 'bad', text: `The stock is bigger than your machine’s travel (${mm(S.travel.x)} × ${mm(S.travel.y)} mm).` });
+        items.push(fits ? { state: 'ok', text: 'The stock fits inside your machine’s travel' } : { state: 'bad', text: `The stock is bigger than your machine’s travel (${n(S.travel.x)} × ${L(S.travel.y)}).` });
       }
       const used = N.toolsUsed(p);
       items.push(used.every((t) => t.fluteLength)
         ? { state: 'ok', text: 'Every tool is long enough for its depth' }
         : { state: 'info', text: 'Some tools have no cutting length in the Tool Library, so their depth isn’t checked.' });
       const cut = p.ops.find((o) => o.kind === 'cutout' && o.enabled);
-      if (cut) items.push({ state: 'ok', text: `The cut-out goes ${mm(p.job.throughDepth)} mm into the spoilboard${p.job.tabs.enabled ? `, with ${p.job.tabs.count} tabs` : ''}` });
+      if (cut) items.push({ state: 'ok', text: `The cut-out goes ${L(p.job.throughDepth, S.units === 'in' ? 3 : 1)} into the spoilboard${p.job.tabs.enabled ? `, with ${p.job.tabs.count} tabs` : ''}` });
       if (p.warnings.some((w) => w.kind === 'undercut')) items.push({ state: 'info', text: 'Some features are on the other side. Cut this side, then turn the part over and make a program for that side.' });
       S.simChecks = { ok: !items.some((i) => i.state === 'bad'), items };
       render();
@@ -755,7 +784,7 @@ export function mountApp(root, host, engine) {
     if (d.go) return go(+d.go);
     if (d.up) return orient(d.up).catch((err) => { S.error = err.message; render(); });
     if (d.material) { S.job.material = d.material; Object.assign(S.job.tabs, N.tabDefaults(d.material)); return changed(); }
-    if (d.tabsize) { const t = tabSize(); S.job.tabs[d.tabsize] = Math.max(TAB_MIN, Math.min(TAB_MAX, Math.round((t[d.tabsize] + +d.by * TAB_STEP) * 10) / 10)); return changed(); }
+    if (d.tabsize) { const t = tabSize(); const k = tab(); S.job.tabs[d.tabsize] = Math.max(k.min, Math.min(k.max, Math.round((t[d.tabsize] + +d.by * k.step) / k.grid) * k.grid)); return changed(); }
     if (d.zero) { S.job.zero.xy = d.zero; return changed(); }
     if (d.z) { S.job.zero.z = d.z; return changed(); }
     if (d.finish) { S.job.finish = d.finish; return changed(); }
@@ -807,7 +836,7 @@ export function mountApp(root, host, engine) {
     if (t.dataset.tool) { S.job.toolOverride[t.dataset.tool] = +t.value || t.value; return changed(); }
     if (t.dataset.stock) {
       const v = parseFloat(String(t.value).replace(',', '.'));
-      if (Number.isFinite(v) && v > 0) S.job.stock[t.dataset.stock] = v;
+      if (Number.isFinite(v) && v > 0) S.job.stock[t.dataset.stock] = N.units.toMm(v, S.units);
       return changed();
     }
   });
@@ -851,13 +880,16 @@ export function mountApp(root, host, engine) {
     btn.disabled = false;
   }
 
+  // The first name not taken in File Manager's ncCAM folder, from one
+  // listing (asking for each name logged a 404 for every free one)
   async function freePath(name) {
     const stem = name.replace(/\.nc$/, '');
+    const taken = new Set();
+    const walk = (list) => { for (const e of list || []) { if (e.type === 'folder') walk(e.children); else taken.add(e.path); } };
+    walk((await api.get('/api/gcode-files'))?.tree);
     for (let n = 1; n < 1000; n++) {
       const path = `ncCAM/${n < 2 ? name : `${stem} (${n}).nc`}`;
-      const probe = await fetch(`${host.base}/api/gcode-files/file?path=${encodeURIComponent(path)}`);
-      if (probe.status === 404) return path;
-      if (!probe.ok) throw new Error(`could not check File Manager (${probe.status})`);
+      if (!taken.has(path)) return path;
     }
     throw new Error('too many saved copies');
   }

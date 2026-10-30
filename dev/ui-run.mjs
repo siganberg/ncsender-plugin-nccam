@@ -27,7 +27,7 @@ await page.click('.ncc-foot [data-go="4"]');
 await page.waitForFunction(() => document.querySelector('.ncc-check'), null, { timeout: 60000 });
 await page.waitForTimeout(6000);
 await page.screenshot({ path: `dist/shots/${pre}5-preview.png` });
-await page.waitForTimeout(40000);
+await page.waitForTimeout(+(process.env.WAIT || 40000));
 await page.screenshot({ path: `dist/shots/${pre}6-preview-end.png` });
 const checks = await page.$$eval('.ncc-check', (els) => els.map((e) => e.textContent));
 console.log('checks', checks);

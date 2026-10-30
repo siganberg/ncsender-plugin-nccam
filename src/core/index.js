@@ -5,4 +5,5 @@ export * from './paths.js';
 export * from './gcode.js';
 export * from './sim.js';
 export * from './tools.js';
+export * as units from './units.js';
 export * as clip from './clip.js';

@@ -206,3 +206,32 @@ test('rapids never move sideways and down together', async () => {
     if (mode === 'G0' && !line.startsWith('G53') && /[XY]/.test(line)) assert.ok(!/Z/.test(line), `rapid with XY and Z: ${line}`);
   }
 });
+
+test('imperial: sizes read in inches, the program stays in mm', async () => {
+  assert.equal(N.units.len(6.35, 'in'), '0.25 in');
+  assert.equal(N.units.len(6.35), '6.4 mm');
+  assert.equal(N.units.toMm(0.5, 'in'), 12.7);
+  assert.equal(N.units.unitsFrom('imperial'), 'in');
+  const { p } = await make('bracket.step', (j) => ({ ...j, units: 'in' }));
+  const hole = p.ops.find((o) => o.kind === 'hole');
+  assert.match(hole.detail, /^Ø0\.\d+ in through/);
+  assert.ok(!p.ops.some((o) => / mm\b/.test(o.detail || '')), 'no mm in the details');
+  assert.ok(N.gcode(p).includes('G21'));
+});
+
+test('Slot numbering: a tool in no slot gets a number past the magazine, never a slot', () => {
+  const lib = [
+    { id: 1, toolId: 1, toolNumber: 1 }, { id: 2, toolId: 2, toolNumber: 2 },
+    { id: 3, toolId: 3, toolNumber: null }, // Tool ID 3, but slot 3 holds another tool
+    { id: 84, toolId: 84, toolNumber: 3 },
+    { id: 20, toolId: 20, toolNumber: null }, // free past the magazine: keeps its ID
+    { id: 5, toolId: 5, toolNumber: null }, // inside the magazine: next free number
+  ];
+  const num = N.makeNumbering('slot', lib, 6, 99);
+  const t = (id) => N.toolNumber(lib.find((x) => x.id === id), num);
+  assert.equal(t(84), 3);
+  assert.equal(t(20), 20);
+  assert.equal(t(3), 7);
+  assert.equal(t(5), 8);
+  assert.equal(N.toolNumber(lib[2], N.makeNumbering('toolId', lib, 6)), 3);
+});
