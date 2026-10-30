@@ -209,6 +209,7 @@ export class Viewer {
       // Markers (zero points) first: each carries the key it stands for
       if (this.markers?.length && this.onMarker) {
         const m = ray.intersectObjects(this.markers)[0];
+        if (m?.object.userData.axis) { this.onAxis?.(m.object.userData.axis); return; }
         if (m) { this.onMarker(m.object.userData.key); return; }
       }
       if (!this.pickMesh || !this.onPick) return;
@@ -239,8 +240,9 @@ export class Viewer {
       g.setAttribute('position', new THREE.BufferAttribute(part.positions, 3));
       g.setIndex(new THREE.BufferAttribute(part.indices, 1));
       g.computeVertexNormals();
-      this.content.add(new THREE.Mesh(g, new THREE.MeshStandardMaterial({ color: 0x8ea4bb, metalness: 0.15, roughness: 0.55 })));
-    }
+      this.partMesh = new THREE.Mesh(g, new THREE.MeshStandardMaterial({ color: 0x8ea4bb, metalness: 0.15, roughness: 0.55 }));
+      this.content.add(this.partMesh);
+    } else this.partMesh = null;
     const z = zFace === 'bed' ? stock.bottom : stock.top;
     const r = size * 0.014;
     this.markers = [];
@@ -268,15 +270,29 @@ export class Viewer {
         pulse.renderOrder = 4;
         this.content.add(pulse);
         this.pulse = pulse;
-        const L = size * 0.3;
+        const L = size * 0.24;
         for (const [dir, col, label] of [[[1, 0, 0], 0xe74c3c, 'X'], [[0, 1, 0], 0x2ecc71, 'Y'], [[0, 0, 1], 0x4e8cff, 'Z']]) {
-          const arrow = new THREE.ArrowHelper(new THREE.Vector3(...dir), dot.position, L, col, L * 0.13, L * 0.055);
-          arrow.line.material.depthTest = false; arrow.cone.material.depthTest = false;
-          arrow.renderOrder = 5; arrow.line.renderOrder = 5; arrow.cone.renderOrder = 5;
+          // A thin rod rather than a 1px line, so the arrow reads at a glance
+          const arrow = new THREE.ArrowHelper(new THREE.Vector3(...dir), dot.position, L, col, L * 0.15, L * 0.065);
+          arrow.line.visible = false;
+          const rod = new THREE.Mesh(new THREE.CylinderGeometry(size * 0.0028, size * 0.0028, L * 0.86, 12), new THREE.MeshBasicMaterial({ color: col, depthTest: false }));
+          rod.position.y = L * 0.43;
+          rod.renderOrder = 5;
+          arrow.add(rod);
+          arrow.cone.material.depthTest = false;
+          arrow.renderOrder = 5; arrow.cone.renderOrder = 5;
           this.content.add(arrow);
           const sprite = textSprite(label, col, size * 0.05);
           sprite.position.copy(dot.position).add(new THREE.Vector3(...dir).multiplyScalar(L * 1.18));
           this.content.add(sprite);
+          // A tap on the arrow or its letter turns the part (wider than the
+          // thin arrow, so a finger finds it)
+          const hit = new THREE.Mesh(new THREE.CylinderGeometry(L * 0.1, L * 0.1, L * 1.3, 10), new THREE.MeshBasicMaterial({ visible: false }));
+          hit.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), new THREE.Vector3(...dir));
+          hit.position.copy(dot.position).add(new THREE.Vector3(...dir).multiplyScalar(L * 0.65));
+          hit.userData.axis = label.toLowerCase();
+          this.content.add(hit);
+          this.markers.unshift(hit);
         }
       }
     }
@@ -292,6 +308,29 @@ export class Viewer {
       this.pulse.material.opacity = 0.8 * (1 - k);
       this.pulse.lookAt(this.camera.position);
     };
+  }
+
+  // Spins the part half a turn about its middle, around the Z axis (turned
+  // on the table) or the X axis (turned over), easing in and out.
+  spin(axis, ms = 700) {
+    const m = this.partMesh;
+    if (!m) return Promise.resolve();
+    m.geometry.computeBoundingBox();
+    const c = m.geometry.boundingBox.getCenter(new THREE.Vector3());
+    const ax = axis === 'x' ? new THREE.Vector3(1, 0, 0) : new THREE.Vector3(0, 0, 1);
+    m.matrixAutoUpdate = false;
+    const t0 = performance.now();
+    return new Promise((done) => {
+      const step = (now) => {
+        const k = Math.min(1, (now - t0) / ms), e = k < 0.5 ? 2 * k * k : 1 - (-2 * k + 2) ** 2 / 2;
+        m.matrix.makeTranslation(c.x, c.y, c.z)
+          .multiply(new THREE.Matrix4().makeRotationAxis(ax, Math.PI * e))
+          .multiply(new THREE.Matrix4().makeTranslation(-c.x, -c.y, -c.z));
+        m.matrixWorldNeedsUpdate = true;
+        if (k < 1 && m.parent) requestAnimationFrame(step); else done();
+      };
+      requestAnimationFrame(step);
+    });
   }
 
   // Step 4: the stock as a heightmap, the tool, and the toolpaths.

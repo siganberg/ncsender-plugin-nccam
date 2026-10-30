@@ -114,13 +114,22 @@ export function mountApp(root, host, engine) {
     render();
   }
 
-  // How the part was turned: a side, then any clicked faces, replayed on reopen
-  async function orient(up, replaying = false) {
-    S.loading = 'Turning the part…';
-    render();
-    const r = await engine(Array.isArray(up) ? 'tilt' : 'orient', Array.isArray(up) ? { normal: up } : { up });
-    S.up = Array.isArray(up) ? 'custom' : up;
-    S.upPath = Array.isArray(up) ? [...(S.upPath || []), up] : [up];
+  // How the part was turned: a side, then any clicked faces or turns from
+  // the axis arrows ({ turn: 'around' | 'over' }), replayed on reopen.
+  // `quiet` skips the busy overlay (the arrows animate instead).
+  const OPPOSITE = { top: 'bottom', bottom: 'top', front: 'back', back: 'front', left: 'right', right: 'left' };
+  async function orient(up, replaying = false, quiet = false) {
+    if (!quiet) { S.loading = 'Turning the part…'; render(); }
+    const turn = up && !Array.isArray(up) && typeof up === 'object';
+    const r = await (turn ? engine('turn', { how: up.turn }) : engine(Array.isArray(up) ? 'tilt' : 'orient', Array.isArray(up) ? { normal: up } : { up }));
+    return applyTurn(up, r, replaying);
+  }
+
+  function applyTurn(up, r, replaying) {
+    const turn = up && !Array.isArray(up) && typeof up === 'object';
+    if (turn) S.up = up.turn === 'over' ? (OPPOSITE[S.up] || 'custom') : S.up;
+    else S.up = Array.isArray(up) ? 'custom' : up;
+    S.upPath = turn || Array.isArray(up) ? [...(S.upPath || []), up] : [up];
     if (replaying) { S.part = { positions: r.positions, indices: r.indices }; S.analysis = r.analysis; S.loading = ''; return; }
     S.part = { positions: r.positions, indices: r.indices };
     S.analysis = r.analysis;
@@ -128,7 +137,25 @@ export function mountApp(root, host, engine) {
     S.job = N.defaultJob(r.analysis);
     if (keep) Object.assign(S.job, { material: keep.material, finish: keep.finish, zero: keep.zero, tabs: keep.tabs, stock: { ...S.job.stock, fit: keep.stock.fit, margin: keep.stock.margin, extraTop: keep.stock.extraTop } });
     S.loading = '';
-    await replan();
+    return replan();
+  }
+
+  // An axis arrow on Where is zero: X or Y turns the part half a turn on the
+  // table, Z turns it over. The part spins in the view while the engine
+  // turns it, and the turned part replaces it once the spin ends.
+  let turning = false;
+  async function turnPart(axis) {
+    if (turning || !S.part) return;
+    turning = true;
+    const up = { turn: axis === 'z' ? 'over' : 'around' };
+    try {
+      const [r] = await Promise.all([engine('turn', { how: up.turn }), viewer.spin(axis === 'z' ? 'x' : 'z')]);
+      await applyTurn(up, r, false);
+    } catch (e) {
+      S.error = e.message || String(e);
+      render();
+    }
+    turning = false;
   }
 
   async function replan(paths = false) {
@@ -339,8 +366,10 @@ export function mountApp(root, host, engine) {
           <div class="ncc-fields">${field('width', 'Width X (mm)', st.width)}${field('depth', 'Depth Y (mm)', st.depth)}${field('thickness', 'Thickness Z (mm)', st.thickness)}</div>
         </div>
         <div class="ncc-card">
-          ${toggleRow('tabs', 'Leave tabs to hold the part', j.tabs.enabled ? `${mm(j.tabs.height)} mm tall, so the part stays put until you cut it free` : 'The part comes loose at the end', j.tabs.enabled)}
-          ${j.tabs.enabled ? `<div class="ncc-row"><span class="ncc-row-title" style="font-weight: 500">Number of tabs</span><div class="ncc-stepper"><button type="button" data-tabs="-1" aria-label="Fewer tabs" ${j.tabs.count <= 1 ? 'disabled' : ''}>\u2212</button><span class="ncc-mono">${j.tabs.count}</span><button type="button" data-tabs="1" aria-label="More tabs" ${j.tabs.count >= 12 ? 'disabled' : ''}>+</button></div></div>` : ''}
+          ${toggleRow('tabs', 'Leave tabs to hold the part', j.tabs.enabled ? `${mm(tabSize().height)} \u00d7 ${mm(tabSize().length)} mm, so the part stays put until you cut it free` : 'The part comes loose at the end', j.tabs.enabled)}
+          ${j.tabs.enabled ? `<div class="ncc-row"><span class="ncc-row-title" style="font-weight: 500">Number of tabs</span><div class="ncc-stepper"><button type="button" data-tabs="-1" aria-label="Fewer tabs" ${j.tabs.count <= 1 ? 'disabled' : ''}>\u2212</button><span class="ncc-mono">${j.tabs.count}</span><button type="button" data-tabs="1" aria-label="More tabs" ${j.tabs.count >= 12 ? 'disabled' : ''}>+</button></div></div>
+          ${tabStepper('height', 'Tab thickness', 'Thinner tabs', 'Thicker tabs')}
+          ${tabStepper('length', 'Tab length', 'Shorter tabs', 'Longer tabs')}` : ''}
         </div>
       </div>
       <div class="ncc-col ncc-half">
@@ -360,10 +389,18 @@ export function mountApp(root, host, engine) {
     return { 'back-left': 'back left corner', 'back-center': 'back edge, middle', 'back-right': 'back right corner', 'left-center': 'left edge, middle', center: 'center', 'right-center': 'right edge, middle', 'front-left': 'front left corner', 'front-center': 'front edge, middle', 'front-right': 'front right corner' }[xy];
   }
 
+  // Tab size: the job's, or the material's defaults (older saved jobs)
+  const tabSize = () => ({ ...N.tabDefaults(S.job.material), ...Object.fromEntries(['height', 'length'].filter((k) => S.job.tabs[k] != null).map((k) => [k, S.job.tabs[k]])) });
+  const TAB_MIN = 0.5, TAB_MAX = 10, TAB_STEP = 0.5;
+  function tabStepper(key, title, less, more) {
+    const v = tabSize()[key];
+    return `<div class="ncc-row"><span class="ncc-row-title" style="font-weight: 500">${title}</span><div class="ncc-stepper"><button type="button" data-tabsize="${key}" data-by="-1" aria-label="${less}" ${v <= TAB_MIN ? 'disabled' : ''}>\u2212</button><span class="ncc-mono">${mm(v)} mm</span><button type="button" data-tabsize="${key}" data-by="1" aria-label="${more}" ${v >= TAB_MAX ? 'disabled' : ''}>+</button></div></div>`;
+  }
+
   // The zero picker is the 3D view (showZeroView); this is its slot
   function zeroPicker(st) {
     return `<div class="ncc-zero"><div data-viewer></div></div>
-      <div class="ncc-row-sub ncc-mono" style="text-align: center; margin: 0">${mm(st.width)} \u00d7 ${mm(st.depth)} \u00d7 ${mm(st.thickness)} mm stock \u00b7 tap a point, drag to turn</div>`;
+      <div class="ncc-row-sub ncc-mono" style="text-align: center; margin: 0">${mm(st.width)} \u00d7 ${mm(st.depth)} \u00d7 ${mm(st.thickness)} mm stock \u00b7 tap a point for zero, an arrow to turn the part</div>`;
   }
 
   let shownZero = null;
@@ -379,6 +416,7 @@ export function mountApp(root, host, engine) {
     shownPart = null; shownResult = null;
     viewer.onPick = null;
     viewer.onMarker = (k) => { if (k !== S.job.zero.xy) { S.job.zero.xy = k; changed(); } };
+    viewer.onAxis = (a) => turnPart(a);
   }
 
   // ---------- step 3 ----------
@@ -716,7 +754,8 @@ export function mountApp(root, host, engine) {
     const d = t.dataset;
     if (d.go) return go(+d.go);
     if (d.up) return orient(d.up).catch((err) => { S.error = err.message; render(); });
-    if (d.material) { S.job.material = d.material; return changed(); }
+    if (d.material) { S.job.material = d.material; Object.assign(S.job.tabs, N.tabDefaults(d.material)); return changed(); }
+    if (d.tabsize) { const t = tabSize(); S.job.tabs[d.tabsize] = Math.max(TAB_MIN, Math.min(TAB_MAX, Math.round((t[d.tabsize] + +d.by * TAB_STEP) * 10) / 10)); return changed(); }
     if (d.zero) { S.job.zero.xy = d.zero; return changed(); }
     if (d.z) { S.job.zero.z = d.z; return changed(); }
     if (d.finish) { S.job.finish = d.finish; return changed(); }

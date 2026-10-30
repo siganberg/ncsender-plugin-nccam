@@ -9,7 +9,7 @@
 // bottom, around the outside) the cut-out.
 import { analyze, slice, triangleNormal } from './mesh.js';
 import * as C from './clip.js';
-import { feeds, FINISHES } from './tools.js';
+import { feeds, FINISHES, tabDefaults } from './tools.js';
 
 const EPS = 0.01;
 const TINY = 0.05; // mm²: smaller leftovers are not worth a tool
@@ -21,7 +21,7 @@ export function defaultJob(analysis) {
     material: 'mdf', finish: 'balanced',
     stock: { fit: true, margin: 2, extraTop: 1, width: analysis.size[0] + 4, depth: analysis.size[1] + 4, thickness: analysis.size[2] + 1 },
     zero: { xy: 'front-left', z: 'top' },
-    tabs: { enabled: true, count: 4, height: 3 },
+    tabs: { enabled: true, count: 4, ...tabDefaults('mdf') },
     throughDepth: 0.3,
     disabled: {}, toolOverride: {},
   };

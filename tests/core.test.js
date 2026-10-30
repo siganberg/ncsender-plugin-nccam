@@ -80,11 +80,29 @@ test('tabs hold the part at their height', async () => {
   const { p } = await make('bracket.step');
   const cut = p.ops.find((o) => o.kind === 'cutout');
   const zs = new Set(cut.moves.filter((m) => !m.r).map((m) => Math.round(m.z * 1000) / 1000));
-  assert.ok(zs.has(3), 'tab top at 3 mm');
+  assert.ok(zs.has(2), 'tab top at 2 mm');
   assert.ok(zs.has(-0.3), 'cut through');
   const { p: noTabs } = await make('bracket.step', (j) => ({ ...j, tabs: { ...j.tabs, enabled: false } }));
   const zs2 = new Set(noTabs.ops.find((o) => o.kind === 'cutout').moves.map((m) => Math.round(m.z * 1000) / 1000));
-  assert.ok(!zs2.has(3));
+  assert.ok(!zs2.has(2));
+});
+
+test('tab size: 1 x 1 mm in aluminum, and as set', async () => {
+  assert.deepEqual(N.tabDefaults('aluminum'), { height: 1, length: 1 });
+  assert.deepEqual(N.tabDefaults('mdf'), { height: 2, length: 2 });
+  // How long the tool stays at tab height over one tab, along the path
+  const span = (p, top) => {
+    const cut = p.ops.find((o) => o.kind === 'cutout');
+    let run = 0, best = 0, prev = null;
+    for (const m of cut.moves) { if (prev && !m.r && Math.abs(m.z - top) < 1e-6 && Math.abs(prev.z - top) < 1e-6) { run += Math.hypot(m.x - prev.x, m.y - prev.y); best = Math.max(best, run); } else run = 0; prev = m; }
+    return best;
+  };
+  const al = (await make('bracket.step', (j) => ({ ...j, material: 'aluminum', tabs: { ...j.tabs, ...N.tabDefaults('aluminum') } }))).p;
+  const big = (await make('bracket.step', (j) => ({ ...j, tabs: { ...j.tabs, height: 4, length: 6 } }))).p;
+  const alSpan = span(al, 1), bigSpan = span(big, 4);
+  assert.ok(alSpan > 0, 'tabs at 1 mm in aluminum');
+  assert.ok(bigSpan > 0, 'tabs at 4 mm as set');
+  assert.ok(Math.abs(bigSpan - alSpan - 5) < 0.05, `${bigSpan} vs ${alSpan}`);
 });
 
 test('upside down, the pocket faces away and is reported', async () => {

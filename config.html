@@ -185,7 +185,7 @@
   @media (prefers-reduced-motion: reduce) { .ncc-zp.sel::after { animation: none; opacity: 0; } }
   .ncc-stepper { display: flex; align-items: center; gap: 6px; }
   .ncc-stepper button { display: inline-flex; align-items: center; justify-content: center; width: 44px !important; height: 44px !important; padding: 0 !important; border: 0 !important; border-radius: 10px !important; background: var(--color-surface) !important; color: var(--color-text-primary) !important; font-size: 22px !important; font-weight: 600 !important; line-height: 1 !important; }
-  .ncc-stepper span { min-width: 36px !important; font-size: 17px; text-align: center !important; font-weight: 600 !important; }
+  .ncc-stepper span { min-width: 64px !important; font-size: 17px; text-align: center !important; font-weight: 600 !important; }
 
   /* Step 3 */
   .ncc-ops { display: flex; flex-direction: column; gap: 8px; }
@@ -244,7 +244,7 @@
 <script>
 (function () {
   var PORT = __SERVER_PORT__;
-  var BUILD = '0.1.1-mvu75z7m';
+  var BUILD = '0.1.2-mvu833yp';
   var base = window.ncSender && typeof window.ncSender.getApiBaseUrl === 'function' ? window.ncSender.getApiBaseUrl(PORT) : '';
   var file = function (name) { return base + '/api/plugins/com.ncsender.nccam/icon?file=' + encodeURIComponent(name); };
   var root = document.getElementById('ncc-root');

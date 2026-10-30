@@ -34,6 +34,14 @@ export function createEngine() {
       return { positions: Float32Array.from(part.positions), indices: part.indices.slice(), faces: part.faces, analysis };
     },
 
+    // Turn the part as it is now: 'around' is half a turn on the table (X
+    // and Y both reverse, never a mirror image), 'over' turns it upside down
+    async turn({ how }) {
+      part = N.transformMesh(part, how === 'over' ? [1, 0, 0, 0, -1, 0, 0, 0, -1] : [-1, 0, 0, 0, -1, 0, 0, 0, 1]);
+      const analysis = N.analyze(part);
+      return { positions: Float32Array.from(part.positions), indices: part.indices.slice(), faces: part.faces, analysis };
+    },
+
     async plan({ tools, job, limits, paths, gcodeOptions, timing }) {
       const p = N.plan(part, tools, job, limits);
       if (paths) N.toolpaths(p);

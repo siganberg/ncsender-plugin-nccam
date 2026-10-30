@@ -5,7 +5,7 @@
 // outside edges clockwise, which is the direction Clipper already gives
 // outer loops and holes.
 import * as C from './clip.js';
-import { FINISHES } from './tools.js';
+import { FINISHES, tabDefaults } from './tools.js';
 
 const CLEAR = 3; // mm above the stock for moves between cuts
 
@@ -287,14 +287,16 @@ function drill(path, centers, fd, zTop, zBottom, d) {
 function makeTabs(length, job, r, zPartBottom) {
   const count = Math.max(0, Math.round(job.tabs.count));
   if (!job.tabs.enabled || !count) return null;
-  const width = 2 * r + 4;
+  // The tool's center lifts for the bridge plus its own width
+  const bridge = job.tabs.length ?? tabDefaults(job.material).length;
+  const width = 2 * r + bridge;
   const spans = Array.from({ length: count }, (_, i) => {
     const mid = ((i + 0.5) / count) * length;
     return [mid - width / 2, mid + width / 2];
   });
   const L = length;
   return {
-    top: zPartBottom + job.tabs.height,
+    top: zPartBottom + (job.tabs.height ?? tabDefaults(job.material).height),
     inside: (s) => { const d = ((s % L) + L) % L; return spans.some(([a, b]) => d > a && d < b); },
     edges: (s0, s1) => {
       const out = [];

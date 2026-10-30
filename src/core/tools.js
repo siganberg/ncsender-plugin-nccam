@@ -65,3 +65,7 @@ export function feeds(tool, material, finish, limits = {}) {
     rampAngle: m.ramp,
   };
 }
+
+// Tabs: how tall they stand off the bed and how long a bridge of material
+// they leave, in mm. Aluminum holds with less.
+export const tabDefaults = (material) => (material === 'aluminum' ? { height: 1, length: 1 } : { height: 2, length: 2 });
