@@ -402,3 +402,25 @@ test('a chamfer or two is still 2.5D; the choice can be forced either way', asyn
   const dome = N.orient(domeOnPlinth(), 'top');
   assert.ok(!N.plan(dome, BALL, { ...N.defaultJob(N.analyze(dome)), surface3d: false }).ops.some((o) => o.kind === 'rough3d'));
 });
+
+// An ellipsoid with semi-axes a, b, c (curved all over), outward triangles.
+function ellipsoid(a, b, c, n = 40, m = 24) {
+  const pos = [], idx = [];
+  for (let i = 0; i <= m; i++) for (let j = 0; j < n; j++) {
+    const v = (i / m) * Math.PI - Math.PI / 2, u = (j / n) * 2 * Math.PI;
+    pos.push(a * Math.cos(v) * Math.cos(u), b * Math.cos(v) * Math.sin(u), c * Math.sin(v));
+  }
+  for (let i = 0; i < m; i++) for (let j = 0; j < n; j++) {
+    const p = i * n + j, q = i * n + ((j + 1) % n), r = (i + 1) * n + j, s = (i + 1) * n + ((j + 1) % n);
+    idx.push(p, q, s, p, s, r);
+  }
+  return { positions: Float64Array.from(pos), indices: Uint32Array.from(idx), faces: [], solids: 1, names: [] };
+}
+
+test('a 3D part is offered lying down, not standing on end', () => {
+  const s = N.sides(ellipsoid(10, 12, 30));
+  assert.ok(s.sides[s.best].height < 25, `${s.best} is ${s.sides[s.best].height} mm tall`);
+  // A 2.5D part still goes by what can be reached, not by height
+  const plate = N.sides(N.orient(domeOnPlinth(20, 4, 50), 'top'));
+  assert.equal(plate.best, 'top');
+});

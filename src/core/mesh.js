@@ -272,16 +272,23 @@ function chain(segs) {
 // leaves little of the part uncut (a chamfer on the bottom edge, not a
 // sideways hole). The best one leaves the least, then has the least sloped
 // surface and sits lowest (steadiest).
+// A 3D part (curved all over, cut in 3D) ranks by height after reach: the
+// tools must reach its whole height, and a mask is carved lying down, not
+// standing on end.
+export const SHARE_3D = 0.2;
+
 export function sides(mesh) {
   const out = {};
   for (const side of Object.keys(UP_DIRECTIONS)) {
     const a = analyze(orient(mesh, side));
-    out[side] = { reachable: !a.undercut, missed: a.missed, missedTotal: a.missedTotal, undercutArea: a.undercutArea, slopedArea: a.slopedArea, height: a.size[2] };
+    out[side] = { reachable: !a.undercut, missed: a.missed, missedTotal: a.missedTotal, undercutArea: a.undercutArea, slopedArea: a.slopedArea, slopedShare: a.slopedShare, height: a.size[2] };
   }
   const order = Object.keys(UP_DIRECTIONS);
+  const curved = order.some((s) => out[s].slopedShare > SHARE_3D);
   const ranked = order.slice().sort((x, y) => {
     const a = out[x], b = out[y];
     return (a.reachable === b.reachable ? 0 : a.reachable ? -1 : 1)
+      || (curved && Math.abs(a.height - b.height) > 1 ? a.height - b.height : 0)
       || (Math.abs(a.missed - b.missed) > 1e-4 ? a.missed - b.missed : 0)
       || (Math.abs(a.missedTotal - b.missedTotal) > 1e-4 ? a.missedTotal - b.missedTotal : 0)
       || (Math.abs(a.slopedArea - b.slopedArea) > 1e-6 ? a.slopedArea - b.slopedArea : 0)

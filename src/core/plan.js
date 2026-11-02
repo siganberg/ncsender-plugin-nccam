@@ -7,7 +7,7 @@
 // stock minus the part's section just above the band's floor. Each piece of
 // that area becomes one operation: a pocket, a hole, a step, or (at the
 // bottom, around the outside) the cut-out.
-import { analyze, slice, triangleNormal } from './mesh.js';
+import { analyze, slice, triangleNormal, SHARE_3D } from './mesh.js';
 import { partHeights } from './sim.js';
 import * as C from './clip.js';
 import { feeds, FINISHES, tabDefaults } from './tools.js';
@@ -15,12 +15,12 @@ import { len, num } from './units.js';
 
 const EPS = 0.01;
 const TINY = 0.05; // mm²: smaller leftovers are not worth a tool
-// 3D: a part this much sloped or curved (share of its surface) is roughed
-// in layers and finished with a ball end mill
-const SHARE_3D = 0.2;
+// 3D: a part more than SHARE_3D sloped or curved (share of its surface) is
+// roughed in layers and finished with a ball end mill
 const LAYER_3D = 2; // mm: thickest stair the roughing leaves for the ball
 const ALLOW_3D = 0.3; // mm left on the surface for the finishing pass
 const FLOOR_3D = 25; // mm²: a flat floor this big gets a layer of its own
+const SIMPLIFY_3D = 0.1; // mm: roughing outlines may stray this far (< ALLOW_3D)
 // Height of the ridges between finishing passes
 export const RIDGE_3D = { fast: 0.1, balanced: 0.05, smooth: 0.02 };
 
@@ -219,9 +219,10 @@ export function plan(mesh, tools, job, limits = {}) {
       const open = C.cleanLoops(C.difference(bottom ? footprint : ring, section(bottom ? 0 : z)), TINY);
       const region = prev ? C.cleanLoops(C.intersection(open, prev), TINY) : open;
       const fresh = prev ? C.cleanLoops(C.difference(open, prev), TINY) : [];
-      // Mesh outlines have a point every few tenths: within 0.05 mm is plenty
-      // with ALLOW_3D left on, and a fraction of the work to offset
-      const layer = { zFrom, z: bottom ? -job.throughDepth : z, region: C.simplify(region, 0.05), fresh: C.area(fresh) >= TINY && C.offset(fresh, -0.5).length ? C.simplify(fresh, 0.05) : [] };
+      // Mesh outlines have a point every few tenths: within 0.1 mm still
+      // leaves 0.2 of ALLOW_3D for the finish, and halves the work of the
+      // clearing rings (each one an offset of the whole outline)
+      const layer = { zFrom, z: bottom ? -job.throughDepth : z, region: C.simplify(region, SIMPLIFY_3D), fresh: C.area(fresh) >= TINY && C.offset(fresh, -0.5).length ? C.simplify(fresh, SIMPLIFY_3D) : [] };
       if (C.area(region) >= TINY || layer.fresh.length) layers.push(layer);
       prev = open;
       zFrom = z;
