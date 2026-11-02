@@ -669,3 +669,14 @@ test('a part scales in X, Y and Z together or each alone', () => {
   const layers = (m) => N.plan(N.orient(m, 'top'), BALL, { ...N.defaultJob(N.analyze(N.orient(m, 'top'))), surface3d: true }).ops.find((o) => o.kind === 'rough3d').layers.length;
   assert.ok(layers(N.scaleMesh(dome, [1, 1, 0.5])) < layers(dome));
 });
+
+test('shrinking past a hairline needle in an outline leaves no spike', async () => {
+  const C = await import('../src/core/clip.js');
+  // From a 3D roughing layer of the mask: a needle 4 µm wide at its tip on
+  // the right edge. A plain Clipper offset left a point 6 mm into the part.
+  const loop = [[-20, 190], [5.372, 190], [5.372, 197.15], [5.372, 197.412], [5.37, 197.414], [5.368, 197.412], [5.352, 197.346], [5.352, 197.345], [5.6, 198.999], [5.352, 205], [-20, 205]];
+  const out = C.offset([loop], -6.37);
+  assert.ok(out.length);
+  const xs = out.flat().map((q) => q[0]);
+  assert.ok(Math.max(...xs) < 5.352 - 6.37 + 0.3, `furthest point at x ${Math.max(...xs)}`);
+});

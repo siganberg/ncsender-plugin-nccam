@@ -122,7 +122,8 @@ and steady.
 ## Order of work
 
 1. Mesh STEP reader (done) and the `unionMany` fix (done).
-2. 3D roughing (done): `rough3d`, layers at most min(step-down, 2 mm) apart,
+2. 3D roughing (done): `rough3d`, layers at most a step-down of the roughing
+   end mill or the ball apart (2 mm before section 8),
    landing on flat floors of 25 mm² or more; 0.3 mm left. A spot that first
    opens lower down (an unclosed mesh) is cut from the top.
 3. 3D finishing (done): `finish3d`, drop cutter on a 0.2 mm grid, each node
@@ -210,6 +211,35 @@ Better targets:
 Found on the way and fixed: a short hop between passes went straight
 through anything above the straight line but lower than its higher end
 (`followLine`). It showed up as 0.35 mm gouges with the partial rows.
+
+Not pursued: it doesn't save time.
+
+## 8. Run time: what was measured (2026-11-02)
+
+On the mask with the user's Tool Library (a 1/2" end mill roughs, a 1/4"
+ball finishes) and their machine's rapids (15 000 mm/min): 111 min face
+up, 118 face down.
+
+- **Thicker roughing layers: in.** Layers were at most 2 mm apart; now a
+  step-down of the roughing end mill or the ball, whichever is less (in MDF
+  with a 1/4" ball: 3.2 mm). The ball takes each stair in one pass. 111 to
+  89 min. Thicker layers showed a Clipper bug: shrinking past a needle a few
+  µm wide in an outline left a spike 6 mm long, and a wall lap cut 3.7 mm
+  into the part. `offset()` now takes a 0.005 mm step first.
+- **Full feed downhill: in.** The finish used the plunge rate on anything
+  steeper than 45° down; now only past 70°. 89 to 83 min.
+- **Lower approach before each finishing pass: dropped.** Coming down to
+  the surface plus the allowance instead of over the highest point under the
+  tool saved 3 min, but where roughing couldn't reach (no small end mill long
+  enough) the stock stands higher: two rapids into material.
+- **Rapids** are a sixth of the run at 15 000 mm/min, mostly up to the
+  clearance plane between passes and waterlines; no cheap safe win found.
+- **Waterlines** are half the finishing time and already spaced as widely
+  as the ridge height allows.
+- **The run-time estimate** ignores acceleration (700 mm/s² on the user's
+  machine), so 3D programs with short moves run longer than shown.
+
+Now: 83 min face up, 89 face down, no gouges or rapids into material.
 
 ## Tests to add
 

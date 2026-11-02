@@ -68,6 +68,15 @@ export const intersection = (a, b) => run(ClipperLib.ClipType.ctIntersection, a,
 // leaves stock for a finishing pass can take a coarser one.
 export function offset(paths, delta, arc = ARC_TOLERANCE / SCALE) {
   if (!paths.length) return [];
+  // Shrinking past a hairline needle in the outline (a few µm wide, as mesh
+  // sections have) can leave a spike millimetres long into what should be
+  // gone. A first tiny step removes such needles; it never adds area.
+  if (delta < -2 * NEEDLE) paths = offsetOnce(paths, -NEEDLE, arc), delta += NEEDLE;
+  return offsetOnce(paths, delta, arc);
+}
+const NEEDLE = 0.005;
+function offsetOnce(paths, delta, arc) {
+  if (!paths.length) return [];
   const co = new ClipperLib.ClipperOffset(2, arc * SCALE);
   co.AddPaths(toClipper(paths), ClipperLib.JoinType.jtRound, ClipperLib.EndType.etClosedPolygon);
   const out = new ClipperLib.Paths();

@@ -452,6 +452,7 @@ function toolOnSurface(g, tool, zFloor) {
 // Cuts along a line of points, getting onto it from where the tool is: a
 // short hop goes straight (over whatever stands in the way), a long one up
 // to the clearance plane and down to where stairs left by the roughing may be.
+const STEEP_DOWN = Math.tan((70 * Math.PI) / 180);
 function followLine(path, S, line, fd, reach, above) {
   const first = line[0], last = path.at;
   if (last && !last.r && Math.hypot(first.x - last.x, first.y - last.y) <= reach) {
@@ -474,8 +475,8 @@ function followLine(path, S, line, fd, reach, above) {
   }
   let prev = first;
   for (const q of line.slice(1)) {
-    // Steeper than 45° down: plunge rate
-    path.feed(q.x, q.y, q.z, prev.z - q.z > Math.hypot(q.x - prev.x, q.y - prev.y) ? fd.plunge : fd.feed);
+    // Steeper than 70° down: plunge rate (the ball's tip does the cutting)
+    path.feed(q.x, q.y, q.z, prev.z - q.z > STEEP_DOWN * Math.hypot(q.x - prev.x, q.y - prev.y) ? fd.plunge : fd.feed);
     prev = q;
   }
 }
@@ -799,7 +800,7 @@ export function toolpaths(p) {
         path.retract();
         break;
       }
-      case 'finish3d': surface3d(path, op.surface, op.tool, fd, op.ridge, 0, LAYER_LEFT, op.steep !== false); break;
+      case 'finish3d': surface3d(path, op.surface, op.tool, fd, op.ridge, 0, op.left ?? LAYER_LEFT, op.steep !== false); break;
       case 'drill': drill(path, op.centers, fd, zTop, op.zBottom, op.tool.diameter); break;
       case 'cutout': cutout(path, op.region, r, fd, zTop, op.zBottom, p.job, allowance); break;
     }
