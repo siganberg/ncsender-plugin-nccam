@@ -35,9 +35,11 @@ export function toolStamp(tool, cell) {
       const half = ((tool.angle || (tool.kind === 'drill' ? 118 : 60)) * Math.PI) / 360;
       dz = dd / Math.tan(half);
     }
-    out.push(i, j, dz);
+    out.push(i, j, dz, d);
   }
-  return Float32Array.from(out);
+  const st = Float32Array.from(out);
+  st.inner = Math.max(0, r - cell * Math.SQRT1_2); // reach a rapid is checked over
+  return st;
 }
 
 // Cuts from a to b. Returns true if a rapid ran into material.
@@ -52,13 +54,16 @@ export function cutMove(hm, stamp, a, b, rapid, opIndex) {
     const z = a.z + (b.z - a.z) * t;
     if (z >= hm.top) continue;
     const ci = Math.round(cx), cj = Math.round(cy);
-    for (let s = 0; s < stamp.length; s += 3) {
+    for (let s = 0; s < stamp.length; s += 4) {
       const i = ci + stamp[s], j = cj + stamp[s + 1];
       if (i < 0 || j < 0 || i >= hm.nx || j >= hm.ny) continue;
       const idx = j * hm.nx + i;
       const zz = z + stamp[s + 2];
       if (hm.h[idx] > zz + 1e-4) {
-        if (rapid) { if (hm.h[idx] > zz + 0.05) hit = true; continue; }
+        // A rapid hits only what is clearly inside the tool: its centre sits
+        // on the nearest node, up to 0.71 of a cell off, which on a coarse
+        // grid alone would put a wall it passes by under its edge
+        if (rapid) { if (hm.h[idx] > zz + 0.05 && stamp[s + 3] <= stamp.inner) hit = true; continue; }
         hm.h[idx] = zz;
         hm.op[idx] = opIndex + 1;
       }

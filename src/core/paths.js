@@ -12,8 +12,8 @@ const CLEAR = 3; // mm above the stock for moves between cuts
 // allowance, and a margin. Rapids come down no lower than this above it.
 const LAYER_LEFT = 3.5;
 // A rapid comes down onto a cleared layer only this far inside what it
-// cleared: the machine's and the preview's (grid) slack
-const ENTRY_MARGIN = 0.5;
+// cleared
+const ENTRY_MARGIN = 0.02;
 
 export function depthLevels(zTop, zBottom, stepdown) {
   const n = Math.max(1, Math.ceil((zTop - zBottom) / stepdown - 1e-6));
@@ -21,7 +21,9 @@ export function depthLevels(zTop, zBottom, stepdown) {
 }
 
 class Path {
-  constructor(clearZ) { this.moves = []; this.clearZ = clearZ; this.at = null; }
+  // travel(a, b): how high a rapid from a to b must go (null: the clearance
+  // plane). Set, retract() waits for the next goTo, which knows where to.
+  constructor(clearZ) { this.moves = []; this.clearZ = clearZ; this.at = null; this.travel = null; }
   rapid(x, y, z) { this.push({ r: true, x, y, z }); }
   feed(x, y, z, f) { this.push({ x, y, z, f }); }
   push(m) {
@@ -32,11 +34,14 @@ class Path {
   }
   // Up, across, then down to just above the surface the cut starts from.
   goTo(x, y, zSurface) {
-    if (this.at) this.rapid(this.at.x, this.at.y, this.clearZ);
-    this.rapid(x, y, this.clearZ);
+    const a = this.at;
+    let h = this.clearZ;
+    if (a && this.travel) h = Math.min(h, Math.max(this.travel(a, { x, y }), a.z, zSurface + 1));
+    if (a) this.rapid(a.x, a.y, h);
+    this.rapid(x, y, h);
     this.rapid(x, y, zSurface + 1);
   }
-  retract() { if (this.at) this.rapid(this.at.x, this.at.y, this.clearZ); }
+  retract() { if (this.at && !this.travel) this.rapid(this.at.x, this.at.y, this.clearZ); }
 }
 
 // A closed loop walked by distance.
@@ -199,7 +204,7 @@ function pocket(path, region, r, fd, zTop, zBottom, allowance, lift = null, entr
         if (!linkClear(from, next.at(s), allowed)) {
           // Something is in the way: lift and come down on the next loop
           [sx, sy] = next.at(s);
-          const up = lift ?? zFrom + 1;
+          const up = path.travel ? Math.max(zFrom + 1, Math.min(lift ?? Infinity, path.travel({ x: from[0], y: from[1] }, { x: sx, y: sy }))) : lift ?? zFrom + 1;
           path.rapid(from[0], from[1], up);
           path.rapid(sx, sy, up);
           const safe = Math.max(zFrom, entry ? entry(sx, sy) : zFrom) + 1;
@@ -615,6 +620,27 @@ function simplifyZ(pts, tol) {
   return pts.filter((_, k) => keep[k]);
 }
 
+// Areas of consecutive layers that overlap, joined into columns: each is
+// one area (its first part, for nearestFirst) with all its parts in order.
+function spots(layers) {
+  const open = [], all = [];
+  layers.forEach((layer, k) => {
+    const next = [];
+    for (const area of C.regions(layer.region)) {
+      const b = C.bounds([area[0]]);
+      const s = open.find((o) => o.k === k - 1 && o.b.minX < b.maxX && b.minX < o.b.maxX && o.b.minY < b.maxY && b.minY < o.b.maxY && C.area(C.intersection(o.last, area)) > 0);
+      const spot = s ? s.spot : { parts: [] };
+      if (!s) all.push(spot);
+      spot.parts.push({ k, area });
+      next.push({ k, b, last: area, spot });
+    }
+    open.length = 0;
+    open.push(...next);
+  });
+  // nearestFirst takes areas: give each column its first part's, and back
+  return all.map((spot) => Object.assign([...spot.parts[0].area], { parts: spot.parts }));
+}
+
 // Visits areas from where the tool is, always going to the closest next.
 function nearestFirst(areas, from) {
   const mid = (a) => { const b = C.bounds([a[0]]); return [(b.minX + b.maxX) / 2, (b.minY + b.maxY) / 2]; };
@@ -630,6 +656,53 @@ function nearestFirst(areas, from) {
   return out;
 }
 
+// How far down 3D layers have cleared the stock, on a 1 mm grid over it:
+// a cell goes down to a layer's floor when its middle is inside what the
+// layer swept and it was already cleared to the layer's top. Rapids between
+// cuts go just over the highest cell under the tool's way.
+class Cleared {
+  constructor(stock, zTop) {
+    this.c = 1; this.x0 = stock.minX; this.y0 = stock.minY;
+    this.nx = Math.ceil((stock.maxX - stock.minX) / this.c) + 1;
+    this.ny = Math.ceil((stock.maxY - stock.minY) / this.c) + 1;
+    this.top = new Float32Array(this.nx * this.ny).fill(zTop);
+  }
+  // Even-odd over the loops, row by row
+  layer(loops, zFrom, z) {
+    const { c, x0, y0, nx, ny, top } = this;
+    for (let j = 0; j < ny; j++) {
+      const y = y0 + j * c, xs = [];
+      for (const l of loops) for (let k = 0; k < l.length; k++) {
+        const [ax, ay] = l[k], [bx, by] = l[(k + 1) % l.length];
+        if ((ay <= y) !== (by <= y)) xs.push(ax + ((y - ay) / (by - ay)) * (bx - ax));
+      }
+      xs.sort((a, b) => a - b);
+      for (let k = 0; k + 1 < xs.length; k += 2) {
+        for (let i = Math.max(0, Math.ceil((xs[k] - x0) / c)); i <= Math.min(nx - 1, Math.floor((xs[k + 1] - x0) / c)); i++) {
+          const q = j * nx + i;
+          if (top[q] <= zFrom + 1e-6 && z < top[q]) top[q] = z;
+        }
+      }
+    }
+  }
+  // Highest stock within reach of a tool r wide moving from a to b, + 1 mm
+  over(a, b, r) {
+    const { c, x0, y0, nx, ny, top } = this;
+    const reach = (r + 1.5 * c) / c;
+    const n = Math.max(1, Math.ceil(Math.hypot(b.x - a.x, b.y - a.y) / (c / 2)));
+    let h = -Infinity;
+    for (let k = 0; k <= n; k++) {
+      const fi = (a.x + ((b.x - a.x) * k) / n - x0) / c, fj = (a.y + ((b.y - a.y) * k) / n - y0) / c;
+      for (let j = Math.max(0, Math.ceil(fj - reach)); j <= Math.min(ny - 1, Math.floor(fj + reach)); j++) {
+        for (let i = Math.max(0, Math.ceil(fi - reach)); i <= Math.min(nx - 1, Math.floor(fi + reach)); i++) {
+          if ((i - fi) ** 2 + (j - fj) ** 2 <= reach * reach && top[j * nx + i] > h) h = top[j * nx + i];
+        }
+      }
+    }
+    return h + 1;
+  }
+}
+
 // How low a rapid may come down at x, y onto a layer starting at zFrom:
 // material goes from the top down, so it is clear down to the last of an
 // unbroken run of layers from the top that each swept the whole tool there.
@@ -638,21 +711,28 @@ function clearedDown(swept, zFrom, r, x, y, zTop) {
   let top = zTop;
   for (const z of levels) {
     if (z < zFrom - 1e-6) break;
-    const covers = swept.some((s) => {
-      if (Math.abs(s.z - z) > 1e-6) return false;
-      s.inner ||= new Map();
-      if (!s.inner.has(r)) s.inner.set(r, C.offset(s.area, -r - ENTRY_MARGIN));
-      return inside([x, y], s.inner.get(r));
-    });
-    if (!covers) break;
+    if (!inside([x, y], sweptAt(swept, z, r))) break;
     top = z;
   }
   return Math.max(top, zFrom);
 }
 
+// Everything swept down to height z (roughing and rest together), shrunk so
+// a tool r wide centred inside fits whole. Kept until more is swept there.
+function sweptAt(swept, z, r) {
+  const here = swept.filter((s) => Math.abs(s.z - z) < 1e-6);
+  swept.inner ||= new Map();
+  const key = `${z}|${r}`, got = swept.inner.get(key);
+  if (got && got.n === here.length) return got.loops;
+  const loops = C.offset(C.union(here.flatMap((s) => s.area)), -r - ENTRY_MARGIN);
+  swept.inner.set(key, { n: here.length, loops });
+  return loops;
+}
+
 export function toolpaths(p) {
   const clearZ = p.stock.top + CLEAR;
   const swept = []; // 3D layers cut so far: { zFrom, z, area }
+  let cleared = null; // the same on a grid, for rapids between cuts
   const allowance = (FINISHES[p.job.finish] || FINISHES.balanced).allowance;
   // Without the facing pass the top is still at the stock's height
   const faced = p.ops.some((o) => o.kind === 'face' && o.enabled);
@@ -681,6 +761,24 @@ export function toolpaths(p) {
         // rest3d: narrow places, to the wall (nothing is left for the ball)
         const allow = op.kind === 'rough3d' ? op.allowance : 0;
         const entry = (k) => (x, y) => clearedDown(swept, op.layers[k].zFrom, r, x, y, zTop);
+        cleared ||= new Cleared(p.stock, surface);
+        path.travel = (a, b) => cleared.over(a, b, r);
+        if (op.kind === 'rest3d') {
+          // Each narrow place top to bottom before the next: it only needs
+          // its own column cleared, and the tool doesn't cross the part
+          // again for every layer
+          for (const spot of nearestFirst(spots(op.layers), path.at)) {
+            for (const { k, area } of spot.parts) {
+              const layer = op.layers[k], from = layer.zFrom >= p.analysis.top - 1e-6 ? zTop : layer.zFrom;
+              pocket(path, area, r, fd, from, layer.z, 0, zTop + 1, entry(k));
+              const cut = C.offset(C.offset(area, -r), r);
+              if (cut.length) { swept.push({ zFrom: from, z: layer.z, area: cut }); cleared.layer(cut, from, layer.z); }
+            }
+          }
+          path.travel = null;
+          path.retract();
+          break;
+        }
         op.layers.forEach((layer, k) => {
           const from = layer.zFrom >= p.analysis.top - 1e-6 ? zTop : layer.zFrom;
           for (const area of nearestFirst(C.regions(layer.region), path.at)) pocket(path, area, r, fd, from, layer.z, allow, zTop + 1, entry(k));
@@ -689,8 +787,10 @@ export function toolpaths(p) {
           if (allow > 0) verticalWalls(path, layer.region, k ? op.layers[k - 1].region : null, r, fd, from, layer.z, entry(k));
           // What this layer swept: the tool's reach inside the region
           const cut = C.offset(C.offset([...layer.region, ...(layer.fresh || [])], -(r + allow)), r);
-          if (cut.length) swept.push({ zFrom: from, z: layer.z, area: cut });
+          if (cut.length) { swept.push({ zFrom: from, z: layer.z, area: cut }); cleared.layer(cut, from, layer.z); }
         });
+        path.travel = null;
+        path.retract();
         break;
       }
       case 'finish3d': surface3d(path, op.surface, op.tool, fd, op.ridge, 0, LAYER_LEFT, op.steep !== false); break;

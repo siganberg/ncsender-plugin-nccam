@@ -482,3 +482,20 @@ test('a mesh STEP with a face that is not convex goes to OCCT', () => {
   const square = text.replace("(#10,#11,#12,#13,#14,#15)", '(#10,#14,#15)');
   assert.ok(N.meshFromFacetedStep(square));
 });
+
+test('the simulation still catches a rapid into material on a coarse grid', () => {
+  const stock = { minX: 0, minY: 0, maxX: 100, maxY: 60, top: 20, bottom: 0 };
+  const tool = { id: 1, kind: 'flat', diameter: 6.35 };
+  const run = (moves, cell) => N.simulate({ stock, ops: [{ id: 'a', enabled: true, tool, moves }] }, cell).collisions.length;
+  // Straight through the stock at half height
+  const through = [{ r: true, x: -10, y: 30, z: 10 }, { r: true, x: 110, y: 30, z: 10 }];
+  // Past the stock's edge, 1 mm into it
+  const graze = [{ r: true, x: -10, y: -2.175, z: 10 }, { r: true, x: 110, y: -2.175, z: 10 }];
+  // Past the edge, 0.2 mm clear of it
+  const clear = [{ r: true, x: -10, y: -3.375, z: 10 }, { r: true, x: 110, y: -3.375, z: 10 }];
+  for (const cell of [0.2, 0.65]) {
+    assert.ok(run(through, cell) > 0, `through, ${cell}`);
+    assert.ok(run(graze, cell) > 0, `graze, ${cell}`);
+    assert.equal(run(clear, cell), 0, `clear, ${cell}`);
+  }
+});
