@@ -18,6 +18,12 @@ if (typeof document === 'undefined') {
   };
 } else {
   const NcCam = (window.NcCam = window.NcCam || {});
+  // An update loads this script into a page that still has the old build's
+  // engine: its worker runs the old code, so start a new one.
+  if (NcCam.build !== BUILD && NcCam.engine) {
+    NcCam.engine.then((call) => call.worker?.terminate(), () => {});
+    NcCam.engine = null;
+  }
   NcCam.build = BUILD;
   NcCam.mount = async (root, host) => {
     const { mountApp } = await import('./ui/app.js');
@@ -56,7 +62,7 @@ if (typeof document === 'undefined') {
         worker.postMessage({ ...args, id, type }, transfer);
       });
       const ok = await Promise.race([call('init', { wasmBinary: wasm }).then(() => true), new Promise((r) => setTimeout(() => r(false), 5000))]);
-      if (ok) return call;
+      if (ok) { call.worker = worker; return call; }
       worker.terminate();
     }
     // Workers blocked: run in the page

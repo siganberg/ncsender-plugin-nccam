@@ -244,13 +244,15 @@
 <script>
 (function () {
   var PORT = __SERVER_PORT__;
-  var BUILD = '0.1.4-mvypt0fn';
+  var BUILD = '0.1.4-mvyq9jdb';
   var base = window.ncSender && typeof window.ncSender.getApiBaseUrl === 'function' ? window.ncSender.getApiBaseUrl(PORT) : '';
   var file = function (name) { return base + '/api/plugins/com.ncsender.nccam/icon?file=' + encodeURIComponent(name); };
   var root = document.getElementById('ncc-root');
   var start = function () { window.NcCam.mount(root, { base: base, file: file }); };
   if (window.NcCam && window.NcCam.build === BUILD) return start();
-  fetch(file('lib/nccam.js'))
+  // The build in the URL: the server sends no Cache-Control, so the old
+  // script could come from the cache after an update
+  fetch(file('lib/nccam.js') + '&v=' + encodeURIComponent(BUILD))
     .then(function (r) { if (!r.ok) throw new Error('lib/nccam.js: ' + r.status); return r.text(); })
     .then(function (code) {
       var s = document.createElement('script');
