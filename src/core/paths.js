@@ -456,12 +456,14 @@ function followLine(path, S, line, fd, reach, above) {
   const first = line[0], last = path.at;
   if (last && !last.r && Math.hypot(first.x - last.x, first.y - last.y) <= reach) {
     const m = Math.max(1, Math.ceil(Math.hypot(first.x - last.x, first.y - last.y) / (S.c / 2)));
-    let top = Math.max(last.z, first.z);
+    // In the way: anything above the straight line, even if lower than its
+    // higher end; then over the top of all of it
+    let top = Math.max(last.z, first.z), blocked = false;
     for (let k = 1; k < m; k++) {
       const t = k / m, z = S.dropAt(last.x + (first.x - last.x) * t, last.y + (first.y - last.y) * t) ?? S.zFloor;
-      if (z > last.z + (first.z - last.z) * t + 1e-3) top = Math.max(top, z);
+      if (z > last.z + (first.z - last.z) * t + 1e-3) { blocked = true; top = Math.max(top, z); }
     }
-    if (top > Math.max(last.z, first.z) + 1e-6) {
+    if (blocked) {
       path.feed(last.x, last.y, top + 0.5, fd.feed);
       path.feed(first.x, first.y, top + 0.5, fd.feed);
     }

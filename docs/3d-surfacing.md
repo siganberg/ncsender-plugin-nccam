@@ -169,6 +169,48 @@ is often wanted bigger or smaller than the model.
 - Tests: a cube scaled 2× evenly and 1×1×0.5 keeps its volume ratios; a
   dome flattened in Z gets fewer layers; an inch STL offers ×25.4.
 
+## 7. Finer passes only where there's detail (tried, not in)
+
+Idea: fine passes where the surface has detail (eyes, lips, lettering: sanding
+would erase it) and coarser ones on broad smooth areas, whose taller ridges
+sand off in a minute. Balanced would use 0.05 mm ridges in detail and about
+0.2 mm elsewhere; Fast and Smooth would stay as they are.
+
+Prototype on the local branch `exp/detail-stepover`:
+
+- Detail map (`detailNodes`): where the ball's path bends tighter than a 5 mm
+  radius over a 4 mm span, climbs steeper than 40° across the passes, or
+  meets the part's edge, grown 4 mm so the change doesn't show as a line.
+  On the mask it marks the nose, the rims of the eyes and mouth and the
+  outer edge: about a third of the face. 10–30 ms.
+- Passes: every other row full, the rows between only over the detail.
+
+Measured on the mask (Balanced, 1/4" ball, run time 257 min):
+
+| | Finishing | Parallel passes | Waterlines |
+| --- | --- | --- | --- |
+| Now | 55.7 min | 26.6 min | about 29 min |
+| Detail only, 0.2 mm ridges elsewhere | 51.5 min | 27.3 min | unchanged |
+
+The parallel passes cut 4 min less, but hops between the partial rows add
+nearly as much back. Finishing is a fifth of the mask's run time (roughing
+130 min, rest roughing 54), so even a perfect version would save under 5%.
+Better targets:
+
+1. **Waterlines**: half the finishing. The mask's steep outer flank is smooth;
+   spacing waterlines by the same detail map is the bigger saving.
+2. **Partial rows linked better**: stay low across a smooth gap rather than
+   hop, or join each row's detail pieces in order with the next row's.
+3. **Bigger ball, then a small ball only in the detail** (rest finishing,
+   "Later" above): the stepover grows with the ball's radius, and the
+   detail map says where the small ball goes.
+4. **Roughing**, where most of the time is: thicker layers, a bigger end mill
+   when the stock allows.
+
+Found on the way and fixed: a short hop between passes went straight
+through anything above the straight line but lower than its higher end
+(`followLine`). It showed up as 0.35 mm gouges with the partial rows.
+
 ## Tests to add
 
 - A hemisphere fixture (faceted STEP): roughing leaves at most the allowance;
