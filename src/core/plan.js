@@ -8,12 +8,21 @@
 // that area becomes one operation: a pocket, a hole, a step, or (at the
 // bottom, around the outside) the cut-out.
 import { analyze, slice, triangleNormal } from './mesh.js';
+import { partHeights } from './sim.js';
 import * as C from './clip.js';
 import { feeds, FINISHES, tabDefaults } from './tools.js';
 import { len, num } from './units.js';
 
 const EPS = 0.01;
 const TINY = 0.05; // mm²: smaller leftovers are not worth a tool
+// 3D: a part this much sloped or curved (share of its surface) is roughed
+// in layers and finished with a ball end mill
+const SHARE_3D = 0.2;
+const LAYER_3D = 2; // mm: thickest stair the roughing leaves for the ball
+const ALLOW_3D = 0.3; // mm left on the surface for the finishing pass
+const FLOOR_3D = 25; // mm²: a flat floor this big gets a layer of its own
+// Height of the ridges between finishing passes
+export const RIDGE_3D = { fast: 0.1, balanced: 0.05, smooth: 0.02 };
 
 export const ZERO_POINTS = ['back-left', 'back-center', 'back-right', 'left-center', 'center', 'right-center', 'front-left', 'front-center', 'front-right'];
 
@@ -93,9 +102,11 @@ export function plan(mesh, tools, job, limits = {}) {
   const stock = stockBox(analysis, job);
   const fin = FINISHES[job.finish] || FINISHES.balanced;
   const warnings = [];
+  // job.surface3d: true or false when the user chose, else from the shape
+  const use3d = job.surface3d ?? analysis.slopedShare > SHARE_3D;
   if (analysis.squareEdges) warnings.push({ kind: 'edges', text: 'Chamfers or rounded edges face down on this side, so they are left square.' });
   if (analysis.undercut) warnings.push({ kind: 'undercut', text: 'Some features face the other side, so they can’t be reached from the top. Cut this side, then turn the part over for a second setup.' });
-  if (analysis.sloped) warnings.push({ kind: 'sloped', text: 'Sloped or curved faces (chamfers, fillets) aren\u2019t cut in 3D yet, so they are left square.' });
+  if (analysis.sloped && !use3d) warnings.push({ kind: 'sloped', text: 'Sloped or curved faces (chamfers, fillets) aren\u2019t cut in 3D yet, so they are left square.' });
 
   const flats = tools.filter((t) => t.kind === 'flat').sort((a, b) => b.diameter - a.diameter);
   const drills = tools.filter((t) => t.kind === 'drill');
@@ -107,7 +118,25 @@ export function plan(mesh, tools, job, limits = {}) {
   // What stays at height z: the section there plus everything above it seen
   // from the top, so a face that looks down (a chamfer on the bottom edge) is
   // never cut into.
-  const above = analysis.undercutArea > 0 ? overhangs(mesh) : [];
+  // Highest first: the shadow of everything above z is the first k of them.
+  const above = analysis.undercutArea > 0 ? overhangs(mesh).sort((a, b) => b.maxZ - a.maxZ) : [];
+  // Shadows are built on the nearest one made with fewer triangles, so
+  // levels taken from the top down add a few triangles each (a mesh part
+  // has thousands, and 3D roughing has dozens of levels).
+  const shadows = [];
+  const shadow = (z) => {
+    let lo = 0, hi = above.length;
+    while (lo < hi) { const mid = (lo + hi) >> 1; if (above[mid].maxZ > z + EPS) lo = mid + 1; else hi = mid; }
+    const k = lo;
+    if (!k) return [];
+    let base = null;
+    for (const s of shadows) if (s.k <= k && (!base || s.k > base.k)) base = s;
+    if (base?.k === k) return base.loops;
+    const add = above.slice(base ? base.k : 0, k).map((t) => t.loop);
+    const loops = C.unionMany(base ? [...base.loops, ...add] : add);
+    shadows.push({ k, loops });
+    return loops;
+  };
   // The triangles' shadows meet edge to edge with rounding cracks between
   // them (a filleted edge has thousands): grow and shrink by 2 µm to close
   // them, or every crack becomes a pocket.
@@ -115,8 +144,8 @@ export function plan(mesh, tools, job, limits = {}) {
   const section = (z) => {
     if (sections.has(z)) return sections.get(z);
     const s = C.unionEvenOdd(slice(mesh, z + EPS));
-    const over = above.filter((t) => t.maxZ > z + EPS).map((t) => t.loop);
-    const out = over.length ? C.offset(C.offset(C.union([...s, ...C.unionMany(over)]), 0.002), -0.002) : s;
+    const over = shadow(z);
+    const out = over.length ? C.offset(C.offset(C.union([...s, ...over]), 0.002), -0.002) : s;
     sections.set(z, out);
     return out;
   };
@@ -156,8 +185,56 @@ export function plan(mesh, tools, job, limits = {}) {
     if (tool) add({ id: 'face', kind: 'face', label: 'Flatten the top', tool: take(tool), zTop: stock.top, zBottom: analysis.top, region: rect(stock), detail: `${L(stock.top - analysis.top)} off the top` });
   }
 
-  // 2. Bands from the top down.
-  const levels = [analysis.top, ...analysis.floors.filter((z) => z < analysis.top - EPS && z > EPS), 0];
+  // 2. A 3D part: rough it in layers, then finish the surface.
+  if (use3d) plan3d();
+  function plan3d() {
+    const depth = analysis.top + job.throughDepth;
+    const fits = (t) => t.diameter <= maxD && fluteOk(t, depth);
+    const rough = flats.find((t) => used.has(t.id) && fits(t)) || flats.find(fits);
+    if (!rough) { warnings.push({ kind: 'notool', text: `No end mill is long enough to rough the 3D shape (${L(depth)}).` }); return; }
+    // A ball near 1/4" for the finish: detail without too many passes
+    const balls = tools.filter((t) => t.kind === 'ball' && fits(t)).sort((a, b) => Math.abs(a.diameter - 6.35) - Math.abs(b.diameter - 6.35));
+    const finisher = balls[0] || rough;
+    if (!balls.length) warnings.push({ kind: 'noball', text: `No ball end mill in your Tool Library is long enough, so ${rough.name} finishes the 3D surface. A ball end mill leaves it much smoother.` });
+    // Layers no more than a step-down apart, landing on every flat floor
+    const step = Math.min(opFeeds(rough).stepdown, LAYER_3D);
+    // Only floors with real area: a mesh has stray flat triangles everywhere
+    const keys = [analysis.top, ...analysis.floors.filter((z) => z < analysis.top - EPS && z > EPS && (analysis.floorAreas[z] || 0) >= FLOOR_3D), 0];
+    const zs = [];
+    for (let k = 1; k < keys.length; k++) {
+      const n = Math.max(1, Math.ceil((keys[k - 1] - keys[k]) / step - 1e-6));
+      for (let i = 1; i <= n; i++) zs.push(i === n ? keys[k] : keys[k - 1] - (i * (keys[k - 1] - keys[k])) / n);
+    }
+    // Around the part, wide enough for both tools; it may run past the
+    // stock's edge (air), or a narrow margin would leave the edge uncut
+    const ring = C.offset(footprint, Math.max(rough.diameter, finisher.diameter) + 1);
+    // Each layer clears what the one above cleared, a little lower. A spot
+    // first open at this height (a mesh that isn't closed, or rounding) had
+    // nothing above it cut: it is `fresh`, cut from the top.
+    const layers = [];
+    let zFrom = analysis.top, prev = null;
+    for (const z of zs) {
+      // At the bottom only openings through the part; the cut-out does the rest
+      const bottom = z <= EPS;
+      const open = C.cleanLoops(C.difference(bottom ? footprint : ring, section(bottom ? 0 : z)), TINY);
+      const region = prev ? C.cleanLoops(C.intersection(open, prev), TINY) : open;
+      const fresh = prev ? C.cleanLoops(C.difference(open, prev), TINY) : [];
+      // Mesh outlines have a point every few tenths: within 0.05 mm is plenty
+      // with ALLOW_3D left on, and a fraction of the work to offset
+      const layer = { zFrom, z: bottom ? -job.throughDepth : z, region: C.simplify(region, 0.05), fresh: C.area(fresh) >= TINY && C.offset(fresh, -0.5).length ? C.simplify(fresh, 0.05) : [] };
+      if (C.area(region) >= TINY || layer.fresh.length) layers.push(layer);
+      prev = open;
+      zFrom = z;
+    }
+    if (!layers.length) return;
+    const ridge = RIDGE_3D[job.finish] ?? RIDGE_3D.balanced;
+    const r3 = add({ kind: 'rough3d', label: 'Rough the 3D shape', tool: take(rough), zTop: analysis.top, zBottom: layers[layers.length - 1].z, region: ring, layers, allowance: ALLOW_3D, detail: `${layers.length} layers · ${L(ALLOW_3D)} left` });
+    add({ kind: 'finish3d', label: 'Finish the 3D surface', tool: take(finisher), zTop: analysis.top, zBottom: 0, region: footprint, after: r3.id, ridge, detail: `Parallel passes · ${len(ridge, job.units, job.units === 'in' ? 4 : 2)} ridges` });
+    warnings.push({ kind: 'surface3d', text: `Curved faces are cut in 3D: roughed in ${layers.length} layers, then ${finisher.name} follows the surface.` });
+  }
+
+  // 3. Bands from the top down (2.5D: everything else).
+  const levels = use3d ? [] : [analysis.top, ...analysis.floors.filter((z) => z < analysis.top - EPS && z > EPS), 0];
   // A feature that keeps its shape through several bands (a hole through a
   // pocket's floor height) is one feature from its top to its lowest floor.
   const features = [];
@@ -222,7 +299,7 @@ export function plan(mesh, tools, job, limits = {}) {
     }
   }
 
-  // 3. Holes: a drill of the same size, otherwise an end mill spirals down.
+  // 4. Holes: a drill of the same size, otherwise an end mill spirals down.
   for (const h of holes.values()) {
     const n = h.centers.length;
     const depth = h.zTop - h.zBottom;
@@ -243,7 +320,7 @@ export function plan(mesh, tools, job, limits = {}) {
     add({ kind: 'hole', label: n > 1 ? `Cut ${n} holes` : 'Cut the hole', tool: take(tool), zTop: h.zTop, zBottom: h.zBottom, region, centers: h.centers, detail: `${what} · spiral` });
   }
 
-  // 4. Cut the part free.
+  // 5. Cut the part free.
   if (footprint.length) {
     const depth = analysis.top + job.throughDepth;
     const fits = flats.filter((t) => fluteOk(t, depth) && t.diameter <= maxD);
@@ -279,6 +356,8 @@ export function plan(mesh, tools, job, limits = {}) {
     if (over) { const t = tools.find((x) => x.id === over); if (t) op.tool = t; }
     op.enabled = !job.disabled?.[op.id];
     op.feeds = opFeeds(op.tool);
+    // The part's top on a grid fine enough for the finishing tool
+    if (op.kind === 'finish3d') op.surface = surfaceGrid(mesh, stock, Math.min(0.2, op.tool.diameter / 16));
   }
   return { analysis, stock, zero: zeroPoint(stock, job.zero), ops: order(ops), warnings, job };
 }
@@ -300,6 +379,13 @@ function order(ops) {
     done.add(next); out.push(next); tool = next.tool;
   }
   return [...out, ...last];
+}
+
+// The part's top at each grid node (-Infinity where there is none).
+function surfaceGrid(mesh, stock, cell) {
+  const g = { x0: stock.minX, y0: stock.minY, cell, nx: Math.ceil((stock.maxX - stock.minX) / cell) + 1, ny: Math.ceil((stock.maxY - stock.minY) / cell) + 1 };
+  g.h = partHeights(mesh, g);
+  return g;
 }
 
 function circleLoop(c, n = 32) {

@@ -51,6 +51,7 @@ export function createEngine() {
       if (paths) N.toolpaths(p);
       const seconds = paths ? N.runTime(p, timing) : 0;
       const gcode = paths ? N.gcode(p, gcodeOptions) : '';
+      for (const op of p.ops) delete op.surface; // the height grid stays here
       // Moves go back packed: x, y, z, feed (0 for a rapid)
       for (const op of p.ops) {
         if (!op.moves) continue;

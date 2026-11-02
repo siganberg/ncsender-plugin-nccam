@@ -88,7 +88,7 @@ export const orient = (mesh, up) => transformMesh(mesh, rotationToUp(typeof up =
 export function analyze(mesh, tol = 1e-3) {
   const { max, size } = meshBounds(mesh);
   const top = max[2];
-  const floors = new Set();
+  const floors = new Map(); // height -> flat area there
   let undercutArea = 0, slopedArea = 0, totalArea = 0;
   const p = mesh.positions, ix = mesh.indices;
   const nTri = ix.length / 3;
@@ -100,7 +100,7 @@ export function analyze(mesh, tol = 1e-3) {
     const ar = Math.hypot(uy * vz - uz * vy, uz * vx - ux * vz, ux * vy - uy * vx) / 2;
     totalArea += ar;
     const zMid = (p[a + 2] + p[b + 2] + p[c + 2]) / 3;
-    if (n[2] > 1 - tol) floors.add(Math.round(zMid * 1000) / 1000);
+    if (n[2] > 1 - tol) { const z = Math.round(zMid * 1000) / 1000; floors.set(z, (floors.get(z) || 0) + ar); }
     else if (n[2] < -(1 - tol)) { if (zMid > tol) undercutArea += ar; }
     else if (Math.abs(n[2]) > tol) {
       // A downward-facing slope is an undercut; an upward one a 3D surface
@@ -114,11 +114,12 @@ export function analyze(mesh, tol = 1e-3) {
   const m = faceDown ? missedShare(mesh) : { inside: 0, total: 0 };
   return {
     size, top,
-    floors: [...floors].sort((x, y) => y - x),
+    floors: [...floors.keys()].sort((x, y) => y - x),
+    floorAreas: Object.fromEntries(floors),
     undercut: faceDown && m.inside > MISSED_LIMIT,
     squareEdges: faceDown && m.inside <= MISSED_LIMIT,
     sloped: slopedArea > 1e-3 * totalArea,
-    undercutArea, slopedArea, missed: m.inside, missedTotal: m.total,
+    undercutArea, slopedArea, slopedShare: totalArea > 0 ? slopedArea / totalArea : 0, missed: m.inside, missedTotal: m.total,
   };
 }
 

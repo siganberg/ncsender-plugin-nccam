@@ -27,7 +27,7 @@ export const union = (paths) => run(ClipperLib.ClipType.ctUnion, paths, null);
 // sorted list, so one call with 100k triangles takes minutes. Merge in
 // batches, then merge the results the same way.
 export function unionMany(paths, batch = 256) {
-  let parts = paths;
+  let parts = paths.length > batch ? nearbyFirst(paths) : paths;
   while (parts.length > batch) {
     const next = [];
     for (let i = 0; i < parts.length; i += batch) next.push(union(parts.slice(i, i + batch)));
@@ -41,14 +41,34 @@ export function unionMany(paths, batch = 256) {
   }
   return union(parts);
 }
-export const difference = (a, b) => run(ClipperLib.ClipType.ctDifference, a, b);
+// Loops in Z-order of their middles, so neighbours share a batch.
+function nearbyFirst(paths) {
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  const mids = paths.map((l) => {
+    let sx = 0, sy = 0;
+    for (const [x, y] of l) { sx += x; sy += y; }
+    const m = [sx / l.length, sy / l.length];
+    x0 = Math.min(x0, m[0]); y0 = Math.min(y0, m[1]); x1 = Math.max(x1, m[0]); y1 = Math.max(y1, m[1]);
+    return m;
+  });
+  const s = 65535 / Math.max(x1 - x0, y1 - y0, 1e-9);
+  const spread = (v) => {
+    v = (v | (v << 8)) & 0x00ff00ff; v = (v | (v << 4)) & 0x0f0f0f0f;
+    v = (v | (v << 2)) & 0x33333333; return (v | (v << 1)) & 0x55555555;
+  };
+  const key = mids.map(([x, y]) => (spread(Math.round((x - x0) * s)) | (spread(Math.round((y - y0) * s)) << 1)) >>> 0);
+  return paths.map((_, i) => i).sort((a, b) => key[a] - key[b]).map((i) => paths[i]);
+}
+export const difference =(a, b) => run(ClipperLib.ClipType.ctDifference, a, b);
 export const intersection = (a, b) => run(ClipperLib.ClipType.ctIntersection, a, b);
 
 // Positive delta grows the area, negative shrinks it. Round joins, so an
 // offset is exactly where a round tool's center can go.
-export function offset(paths, delta) {
+// arc: how far round corners may stray from a true arc (mm); roughing that
+// leaves stock for a finishing pass can take a coarser one.
+export function offset(paths, delta, arc = ARC_TOLERANCE / SCALE) {
   if (!paths.length) return [];
-  const co = new ClipperLib.ClipperOffset(2, ARC_TOLERANCE);
+  const co = new ClipperLib.ClipperOffset(2, arc * SCALE);
   co.AddPaths(toClipper(paths), ClipperLib.JoinType.jtRound, ClipperLib.EndType.etClosedPolygon);
   const out = new ClipperLib.Paths();
   co.Execute(out, delta * SCALE);

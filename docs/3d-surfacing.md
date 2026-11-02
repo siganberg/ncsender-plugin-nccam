@@ -1,6 +1,7 @@
 # 3D surfacing: design
 
-Status: proposed. Today ncCAM is 2.5D: it cuts in height bands that start and end
+Status: 3D roughing and parallel finishing are in (see "Order of work").
+Before them ncCAM was 2.5D only: it cuts in height bands that start and end
 only at flat floors, and treats every wall as vertical. Sloped and curved faces
 are reported ("aren't cut in 3D yet") and left square. A sculpted part such as a
 mask comes out as a few terraces.
@@ -107,7 +108,7 @@ locating pins in the spoilboard and matching holes in the stock, so the flipped
 stock sits exactly where the first side's program expects it. Plan for ncCAM:
 
 - In the flip warning (Preview & Load), point to Spoilboard Toolbox for setting
-  up the pins.
+  up the pins (done).
 - Stock & Zero: let the user leave room for pin holes in the stock margin
   (outside the part and the tabs), and keep the second side's zero mirrored
   about the pin axis so both programs share one origin.
@@ -121,12 +122,22 @@ and steady.
 ## Order of work
 
 1. Mesh STEP reader (done) and the `unionMany` fix (done).
-2. 3D roughing: extra levels and allowance. Mostly reuses the existing code.
-3. 3D finishing: drop-cutter on the height grid, parallel passes. The main new
-   work and the most testing on real parts (the mask, a relief carving, a
-   filleted mould).
-4. UI rows and warnings; the Spoilboard Toolbox note in the flip warning.
-5. Contour and rest finishing.
+2. 3D roughing (done): `rough3d`, layers at most min(step-down, 2 mm) apart,
+   landing on flat floors of 25 mm² or more; 0.3 mm left. A spot that first
+   opens lower down (an unclosed mesh) is cut from the top.
+3. 3D finishing (done): `finish3d`, drop cutter on a 0.2 mm grid, each node
+   counted half a cell's diagonal nearer so steep walls aren't gouged
+   between nodes. Ridges: Fast 0.1, Balanced 0.05, Smooth 0.02 mm.
+4. UI (done): the "Cut curved faces in 3D" switch (job.surface3d; automatic
+   above 20% sloped surface), rows, colours, ball tool drawing, the
+   Spoilboard Toolbox note in the flip check.
+5. Next: contour finishing for steep walls, rest finishing, and picking the
+   side up for a 3D part by what the tools can reach (the mask is offered
+   standing 220 mm tall rather than lying 88 mm face up).
+
+Measured on the 20 000-triangle mask, face up, on a Mac: plan 0.35 s,
+toolpaths 1.9 s (6.5 s face down: to look at), 137 min run time, no gouges
+or rapids into material in the simulation.
 
 ## Tests to add
 

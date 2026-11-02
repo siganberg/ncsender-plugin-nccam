@@ -30,6 +30,8 @@ const ICONS = {
   drill: svg('<path d="M12 3v14M8 13l4 8 4-8"/>'),
   step: svg('<path d="M3 18h6v-6h6V6h6"/>'),
   cutout: svg('<rect x="3" y="5" width="18" height="14" rx="2" stroke-dasharray="3 2.5"/>'),
+  rough3d: svg('<path d="M3 19h4v-4h3v-4h4v4h3v4h4"/>'),
+  finish3d: svg('<path d="M3 18c3 0 4-9 9-9s6 9 9 9"/>'),
 };
 
 const SIDE_ICONS = {
@@ -298,7 +300,7 @@ export function mountApp(root, host, engine) {
     if (!S.plan) return `<div class="ncc-card"><div class="ncc-label">Found in this part</div><div class="ncc-row-sub">${S.planning ? 'Looking…' : ''}</div></div>`;
     // The same feature more than once is one line: "5 pockets, through"
     const groups = new Map();
-    for (const o of S.plan.ops.filter((x) => x.kind !== 'face' && x.kind !== 'corners')) {
+    for (const o of S.plan.ops.filter((x) => x.kind !== 'face' && x.kind !== 'corners' && x.kind !== 'finish3d')) {
       const name = featureName(o);
       const g = groups.get(name) || { o, name, n: 0 };
       g.n += o.count || 1;
@@ -312,6 +314,7 @@ export function mountApp(root, host, engine) {
   function featureName(o) {
     const d = o.detail.replace(/ · spiral$/, '');
     if (o.kind === 'cutout') return `Outline, ${L(o.zTop)} cut-out`;
+    if (o.kind === 'rough3d') return `3D surface, ${L(o.zTop)} tall`;
     if (o.kind === 'hole' || o.kind === 'drill') return `${o.centers.length > 1 ? `${o.centers.length} holes` : 'Hole'}, ${d}`;
     if (o.kind === 'step') return `Step, ${d}`;
     return `Pocket, ${d.split(' · ').pop()}`;
@@ -319,15 +322,15 @@ export function mountApp(root, host, engine) {
 
   function planHints(modelStep) {
     if (!S.plan) return '';
-    const w = S.plan.warnings.filter((x) => !modelStep || x.kind === 'undercut' || x.kind === 'sloped' || x.kind === 'edges');
+    const w = S.plan.warnings.filter((x) => !modelStep || x.kind === 'undercut' || x.kind === 'sloped' || x.kind === 'edges' || x.kind === 'surface3d');
     if (!w.length && modelStep) return `<div class="ncc-hint">${ICONS.info}<span>Everything can be cut from the top in one setup.</span></div>`;
-    return w.map((x) => `<div class="ncc-hint ${x.kind === 'notool' ? 'bad' : ''}">${x.kind === 'notool' ? ICONS.warn : ICONS.info}<span>${esc(x.text)}</span></div>`).join('');
+    return w.map((x) => `<div class="ncc-hint ${x.kind === 'notool' || x.kind === 'noball' ? 'bad' : ''}">${x.kind === 'notool' || x.kind === 'noball' ? ICONS.warn : ICONS.info}<span>${esc(x.text)}</span></div>`).join('');
   }
 
   function modelOverlay() {
     if (!S.plan) return '';
-    const kinds = [...new Set(S.plan.ops.filter((o) => o.kind !== 'face' && o.kind !== 'corners').map((o) => o.kind))];
-    const label = { pocket: 'Pockets', hole: 'Holes', drill: 'Holes', step: 'Steps', cutout: 'Outline' };
+    const kinds = [...new Set(S.plan.ops.filter((o) => o.kind !== 'face' && o.kind !== 'corners' && o.kind !== 'finish3d').map((o) => o.kind))];
+    const label = { pocket: 'Pockets', hole: 'Holes', drill: 'Holes', step: 'Steps', cutout: 'Outline', rough3d: '3D surface' };
     return `<div class="ncc-overlay tr">${kinds.map((k) => `<span class="ncc-chip"><span class="ncc-swatch" style="background: ${OP_COLORS[k]}"></span>${label[k]}</span>`).join('')}</div>
       <div class="ncc-overlay bl"><span class="ncc-chip">Drag to rotate</span><span class="ncc-chip">Scroll to zoom</span><span class="ncc-chip">Click a face to put it on top</span></div>`;
   }
@@ -451,7 +454,7 @@ export function mountApp(root, host, engine) {
     const pair = `<div class="ncc-pair">
           <div class="ncc-card"><div class="ncc-label">Finish</div>
             <div class="ncc-seg" role="group" aria-label="Finish">${Object.entries(N.FINISHES).map(([k, v]) => `<button type="button" class="${S.job.finish === k ? 'sel' : ''}" data-finish="${k}">${v.name}</button>`).join('')}</div>
-            <div class="ncc-row-sub">${{ fast: 'Bigger steps, no finishing pass.', balanced: `Leaves ${L(0.2, S.units === 'in' ? 3 : 1)} on the walls, then a clean finishing pass.`, smooth: 'Lighter steps and a finishing pass, for the best walls.' }[S.job.finish]}</div>
+            <div class="ncc-row-sub">${p.ops.some((o) => o.kind === 'finish3d') ? `3D: passes spaced for ${L(N.RIDGE_3D[S.job.finish], S.units === 'in' ? 4 : 2)} ridges${S.job.finish === 'fast' ? '; flat walls without a finishing pass' : ''}.` : ''} ${{ fast: 'Bigger steps, no finishing pass.', balanced: `Leaves ${L(0.2, S.units === 'in' ? 3 : 1)} on the walls, then a clean finishing pass.`, smooth: 'Lighter steps and a finishing pass, for the best walls.' }[S.job.finish]}</div>
             ${f ? `<div class="ncc-mono ncc-row-sub" style="line-height: 1.6">${esc(mainOp.tool.name)}<br>${esc(N.MATERIALS[S.job.material].name)} \u00b7 ${f.rpm.toLocaleString()} RPM<br>${S.units === 'in' ? `${n(f.feed, 1)} in/min` : `${f.feed.toLocaleString()} mm/min`} \u00b7 ${L(f.stepdown, S.units === 'in' ? 3 : 2)} per pass</div>` : ''}
           </div>
           <div class="ncc-card"><div class="ncc-label">Tools for this job</div>
@@ -462,9 +465,20 @@ export function mountApp(root, host, engine) {
     // Landscape: list | drawing over Finish + Tools. Portrait: the drawing
     // stays on top and only the list (Finish + Tools at its end) scrolls.
     return `<div class="ncc-plan">
-        <div class="ncc-plan-list" data-keep-scroll="ops"><div class="ncc-ops">${rows}</div>${planHints(false)}<div class="ncc-plan-pair-in">${pair}</div></div>
+        <div class="ncc-plan-list" data-keep-scroll="ops">${threeD()}<div class="ncc-ops">${rows}</div>${planHints(false)}<div class="ncc-plan-pair-in">${pair}</div></div>
         <div class="ncc-card ncc-viewcard ncc-plan-view"><div data-viewer></div></div>
         <div class="ncc-plan-pair">${pair}</div>
+      </div>`;
+  }
+
+  // Curved faces cut in 3D, or left square: shown when the part has any
+  function threeD() {
+    const on = S.plan.ops.some((o) => o.kind === 'rough3d');
+    if (!on && !S.plan.analysis.sloped) return '';
+    return `<div class="ncc-op" style="margin-bottom: 10px">
+        <div class="ncc-op-icon" style="background: color-mix(in srgb, ${OP_COLORS.finish3d} 16%, transparent); color: ${OP_COLORS.finish3d}">${ICONS.finish3d}</div>
+        <div class="ncc-op-text"><div class="ncc-op-title">Cut curved faces in 3D</div><div class="ncc-op-sub">${on ? 'Roughed in layers, then a ball end mill follows the surface.' : 'Off: sloped and curved faces are left square.'}</div></div>
+        <button class="ncc-toggle" type="button" role="switch" aria-checked="${on}" aria-label="Cut curved faces in 3D" data-toggle="3d"></button>
       </div>`;
   }
 
@@ -485,7 +499,7 @@ export function mountApp(root, host, engine) {
   }
 
   function toolChoices(o) {
-    const kinds = o.kind === 'drill' ? ['drill'] : o.kind === 'face' ? ['surfacing', 'flat'] : ['flat'];
+    const kinds = o.kind === 'drill' ? ['drill'] : o.kind === 'face' ? ['surfacing', 'flat'] : o.kind === 'finish3d' ? ['ball', 'flat'] : ['flat'];
     const list = S.tools.filter((t) => kinds.includes(t.kind)).sort((a, b) => b.diameter - a.diameter);
     return list.some((t) => t.id === o.tool.id) ? list : [o.tool, ...list];
   }
@@ -758,7 +772,7 @@ export function mountApp(root, host, engine) {
         : { state: 'info', text: 'Some tools have no cutting length in the Tool Library, so their depth isn’t checked.' });
       const cut = p.ops.find((o) => o.kind === 'cutout' && o.enabled);
       if (cut) items.push({ state: 'ok', text: `The cut-out goes ${L(p.job.throughDepth, S.units === 'in' ? 3 : 1)} into the spoilboard${p.job.tabs.enabled ? `, with ${p.job.tabs.count} tabs` : ''}` });
-      if (p.warnings.some((w) => w.kind === 'undercut')) items.push({ state: 'info', text: 'Some features are on the other side. Cut this side, then turn the part over and make a program for that side.' });
+      if (p.warnings.some((w) => w.kind === 'undercut')) items.push({ state: 'info', text: 'Some features are on the other side. Cut this side, then turn the part over and make a program for that side. Pins (the Spoilboard Toolbox plugin can set them up) put it back in the same place.' });
       S.simChecks = { ok: !items.some((i) => i.state === 'bad'), items };
       render();
     }, 50);
@@ -796,6 +810,7 @@ export function mountApp(root, host, engine) {
       return changed();
     }
     if (d.toggle === 'tabs') { S.job.tabs.enabled = !S.job.tabs.enabled; return changed(); }
+    if (d.toggle === '3d') { S.job.surface3d = !S.plan?.ops.some((o) => o.kind === 'rough3d'); S.job.disabled = {}; S.job.toolOverride = {}; return changed(); }
     if (d.op) { S.job.disabled[d.op] = !S.job.disabled[d.op]; return changed(); }
     if (d.speed) { PLAY.speed = +d.speed; return updatePlaybar(); }
     if (d.act === 'play') {

@@ -290,3 +290,115 @@ test('triangles in no order merge in one go (a faceted mask hung here)', () => {
   assert.ok(Date.now() - t < 10000);
   assert.ok(Math.abs(N.clip.area(u) - 3600) < 0.01);
 });
+
+// A dome R mm across on a plinth h mm tall, w mm square: curved on top,
+// flat around it, vertical outside walls. Outward triangles.
+function domeOnPlinth(R = 20, h = 4, w = 50, n = 48, rings = 16) {
+  const pos = [], idx = [];
+  const v = (x, y, z) => (pos.push(x, y, z), pos.length / 3 - 1);
+  const c = w / 2;
+  // Dome rings from the equator (on the plinth) up to the pole
+  const ring = [];
+  for (let k = 0; k < rings; k++) {
+    const a = (k / rings) * (Math.PI / 2);
+    ring.push(Array.from({ length: n }, (_, i) => { const t = (i / n) * 2 * Math.PI; return v(c + R * Math.cos(a) * Math.cos(t), c + R * Math.cos(a) * Math.sin(t), h + R * Math.sin(a)); }));
+  }
+  const pole = v(c, c, h + R);
+  for (let k = 0; k + 1 < rings; k++) for (let i = 0; i < n; i++) {
+    const a = ring[k][i], b = ring[k][(i + 1) % n], d = ring[k + 1][i], e = ring[k + 1][(i + 1) % n];
+    idx.push(a, b, e, a, e, d);
+  }
+  for (let i = 0; i < n; i++) idx.push(ring[rings - 1][i], ring[rings - 1][(i + 1) % n], pole);
+  // Plinth top: from its square edge in to the dome's equator, as a fan of quads
+  const sq = Array.from({ length: n }, (_, i) => {
+    const t = (i / n) * 2 * Math.PI, s = c / Math.max(Math.abs(Math.cos(t)), Math.abs(Math.sin(t)));
+    return [c + s * Math.cos(t), c + s * Math.sin(t)];
+  });
+  const top = sq.map(([x, y]) => v(x, y, h)), bot = sq.map(([x, y]) => v(x, y, 0));
+  for (let i = 0; i < n; i++) {
+    const j = (i + 1) % n;
+    idx.push(top[i], top[j], ring[0][j], top[i], ring[0][j], ring[0][i]); // plinth top
+    idx.push(bot[i], bot[j], top[j], bot[i], top[j], top[i]); // outside wall
+  }
+  const mid = v(c, c, 0);
+  for (let i = 0; i < n; i++) idx.push(bot[(i + 1) % n], bot[i], mid); // bottom
+  return { positions: Float64Array.from(pos), indices: Uint32Array.from(idx), faces: [], solids: 1, names: [] };
+}
+
+const BALL = N.normalizeTools([...LIBRARY, { id: 9, toolId: 9, toolNumber: 4, name: '1/4" Ball End Mill', type: 'ball', diameter: 6.35, dimensions: { flute_length: 25 } }]);
+
+// Cut below the part, rapids into material, and how much is left over the
+// part. The simulation puts the tool on the nearest grid node (up to 0.14 mm
+// off), which on a steep slope is a deep cut that isn't there: a column is
+// measured against the lowest part height around it.
+function check3d(mesh, p) {
+  const { hm, collisions } = N.simulate(p, 0.2);
+  const ph = N.partHeights(mesh, hm);
+  let gouges = 0, sum = 0, cells = 0;
+  const nx = hm.nx;
+  for (let i = 0; i < ph.length; i++) {
+    let low = ph[i];
+    for (const k of [i - 1, i + 1, i - nx, i + nx, i - nx - 1, i - nx + 1, i + nx - 1, i + nx + 1]) if (k >= 0 && k < ph.length) low = Math.min(low, ph[k]);
+    if (low === -Infinity) continue;
+    if (low - hm.h[i] > 0.02) gouges++;
+    sum += hm.h[i] - ph[i]; cells++;
+  }
+  return { gouges, collisions: collisions.length, meanLeft: sum / cells };
+}
+
+test('a curved part is roughed in layers and finished with a ball end mill', () => {
+  for (const finish of ['fast', 'smooth']) {
+    const mesh = N.orient(domeOnPlinth(), 'top');
+    const c = check3d(mesh, N.toolpaths(N.plan(mesh, BALL, { ...N.defaultJob(N.analyze(mesh)), finish })));
+    assert.equal(c.gouges, 0, finish);
+    assert.equal(c.collisions, 0, finish);
+  }
+  const mesh = N.orient(domeOnPlinth(), 'top');
+  const a = N.analyze(mesh);
+  assert.ok(a.slopedShare > 0.2);
+  const p = N.toolpaths(N.plan(mesh, BALL, N.defaultJob(a)));
+  assert.deepEqual(p.ops.map((o) => o.kind), ['face', 'rough3d', 'finish3d', 'cutout']);
+  const [rough, finish] = [p.ops[1], p.ops[2]];
+  assert.equal(rough.tool.kind, 'flat');
+  assert.equal(finish.tool.kind, 'ball');
+  // The plinth's top is a real floor: a layer lands on it
+  assert.ok(rough.layers.some((l) => Math.abs(l.z - 4) < 1e-6));
+  assert.ok(!p.warnings.some((w) => w.kind === 'sloped'));
+  const c = check3d(mesh, p);
+  assert.equal(c.gouges, 0);
+  assert.equal(c.collisions, 0);
+  assert.ok(c.meanLeft < 0.15, `mean left ${c.meanLeft}`);
+});
+
+test('without the finishing pass the roughing leaves its allowance, never less', () => {
+  const mesh = N.orient(domeOnPlinth(), 'top');
+  const p = N.toolpaths(N.plan(mesh, BALL, N.defaultJob(N.analyze(mesh))));
+  p.ops.find((o) => o.kind === 'finish3d').enabled = false;
+  const c = check3d(mesh, p);
+  assert.equal(c.gouges, 0);
+  assert.equal(c.collisions, 0);
+  assert.ok(c.meanLeft > 0.3);
+});
+
+test('Smooth passes closer than Fast; with no ball end mill a flat one finishes and says so', () => {
+  const mesh = N.orient(domeOnPlinth(), 'top');
+  const rows = (finish) => {
+    const p = N.toolpaths(N.plan(mesh, BALL, { ...N.defaultJob(N.analyze(mesh)), finish }));
+    return new Set(p.ops.find((o) => o.kind === 'finish3d').moves.filter((m) => !m.r).map((m) => m.y.toFixed(3))).size;
+  };
+  assert.ok(rows('smooth') > rows('fast') * 1.5);
+  const p = N.plan(mesh, tools, N.defaultJob(N.analyze(mesh)));
+  assert.equal(p.ops.find((o) => o.kind === 'finish3d').tool.kind, 'flat');
+  assert.ok(p.warnings.some((w) => w.kind === 'noball'));
+});
+
+test('a chamfer or two is still 2.5D; the choice can be forced either way', async () => {
+  for (const f of ['chamfered.step', 'onshape-plate.step']) {
+    const mesh = N.orient(await loadStep(f), 'top');
+    const job = N.defaultJob(N.analyze(mesh));
+    assert.ok(!N.plan(mesh, BALL, job).ops.some((o) => o.kind === 'rough3d'), f);
+    assert.ok(N.plan(mesh, BALL, { ...job, surface3d: true }).ops.some((o) => o.kind === 'rough3d'), f);
+  }
+  const dome = N.orient(domeOnPlinth(), 'top');
+  assert.ok(!N.plan(dome, BALL, { ...N.defaultJob(N.analyze(dome)), surface3d: false }).ops.some((o) => o.kind === 'rough3d'));
+});

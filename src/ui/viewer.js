@@ -3,7 +3,7 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 
-export const OP_COLORS = { face: '#93a2b4', pocket: '#1abc9c', hole: '#4ea1ff', drill: '#4ea1ff', step: '#2ecc71', corners: '#48d1b4', cutout: '#a78bfa' };
+export const OP_COLORS = { face: '#93a2b4', pocket: '#1abc9c', hole: '#4ea1ff', drill: '#4ea1ff', step: '#2ecc71', corners: '#48d1b4', cutout: '#a78bfa', rough3d: '#f5a524', finish3d: '#ff7a59' };
 
 export const STOCK_COLORS = {
   softwood: '#d8b38a', hardwood: '#9c6b45', mdf: '#b59672', plastic: '#d9e2ea', aluminum: '#b9c1c9', foam: '#c7b8a5',
@@ -493,7 +493,10 @@ export class Viewer {
   // so a small part isn't hidden behind it. A surfacing bit is a short wide
   // head on a 1/4" shank, like the real ones.
   setTool(tool, maxDepth) {
-    for (const c of [...this.tool.children]) { this.tool.remove(c); c.geometry.dispose(); c.material.dispose(); }
+    for (const c of [...this.tool.children]) {
+      this.tool.remove(c);
+      c.traverse((m) => { m.geometry?.dispose(); m.material?.dispose(); });
+    }
     const r = tool.diameter / 2;
     const wide = tool.kind === 'surfacing' || r > 6.35;
     const flute = wide ? Math.max(maxDepth + 1, Math.min(8, r * 0.5)) : Math.max(tool.fluteLength || 0, Math.min(25, Math.max(maxDepth + 3, tool.diameter * 2)));
@@ -503,6 +506,14 @@ export class Viewer {
       const h = r / Math.tan(((tool.kind === 'drill' ? 118 : 60) * Math.PI) / 360);
       tip = new THREE.Mesh(new THREE.ConeGeometry(r, h, 48), metal);
       tip.rotation.x = -Math.PI / 2; tip.position.z = h / 2;
+    } else if (tool.kind === 'ball') {
+      // Flutes down to a round end, its lowest point at the tip
+      tip = new THREE.Group();
+      const body = new THREE.Mesh(new THREE.CylinderGeometry(r, r, flute - r, 64), metal);
+      body.rotation.x = Math.PI / 2; body.position.z = r + (flute - r) / 2;
+      const end = new THREE.Mesh(new THREE.SphereGeometry(r, 48, 24, 0, Math.PI * 2, Math.PI / 2, Math.PI / 2), metal);
+      end.rotation.x = Math.PI / 2; end.position.z = r;
+      tip.add(body, end);
     } else {
       tip = new THREE.Mesh(new THREE.CylinderGeometry(r, r, flute, 64), metal);
       tip.rotation.x = Math.PI / 2; tip.position.z = flute / 2;
