@@ -54,6 +54,8 @@ export function mountApp(root, host, engine) {
     step: 1, maxStep: 1,
     fileName: '', loading: '', error: '',
     up: 'top', analysis: null, part: null,
+    // Size: scale in the file's X, Y, Z; lock keeps them together
+    scale: [1, 1, 1], lock: true, fileSize: null, meshKind: null,
     tools: [], numbering: 'slot', safeZ: null, connected: false, units: 'mm',
     limits: {}, travel: null,
     job: null, plan: null, planning: false, result: null, simChecks: null,
@@ -106,8 +108,9 @@ export function mountApp(root, host, engine) {
     try {
       const bytes = last ? last.bytes : await file.arrayBuffer();
       S.bytes = bytes.slice(0);
-      const info = await engine('load', { bytes }, [bytes]);
-      S.sides = info.sides;
+      S.scale = last?.scale || [1, 1, 1]; S.lock = last?.lock ?? true;
+      const info = await engine('load', { bytes, name, scale: S.scale }, [bytes]);
+      S.sides = info.sides; S.fileSize = info.fileSize; S.meshKind = info.mesh || null;
       if (last?.upPath?.length) {
         S.job = null;
         for (const up of last.upPath) await orient(up, true);
@@ -123,6 +126,29 @@ export function mountApp(root, host, engine) {
     }
     S.loading = '';
     render();
+  }
+
+  // A new size: the part read again at it, turned the same way, the job kept
+  let sizing = Promise.resolve();
+  function rescale(scale) {
+    S.scale = scale;
+    sizing = sizing.then(async () => {
+      S.loading = 'Resizing the part\u2026'; render();
+      try {
+        const info = await engine('rescale', { scale });
+        S.sides = info.sides;
+        const keep = S.job, path = S.upPath || [info.best];
+        S.job = null;
+        for (const up of path) await orient(up, true);
+        S.job = { ...N.defaultJob(S.analysis), ...keep, stock: keep.stock.fit ? N.defaultJob(S.analysis).stock : keep.stock };
+        S.result = null; S.maxStep = Math.min(S.maxStep, 3);
+        await replan();
+        remember();
+      } catch (e) { S.error = e.message || String(e); }
+      S.loading = '';
+      render();
+    });
+    return sizing;
   }
 
   // How the part was turned: a side, then any clicked faces or turns from
@@ -196,7 +222,7 @@ export function mountApp(root, host, engine) {
   function remember() {
     if (!S.bytes || !S.job) return;
     clearTimeout(saveTimer);
-    saveTimer = setTimeout(() => store.save('last', { name: S.fileName, bytes: S.bytes, upPath: S.upPath, job: S.job, savedAt: Date.now() }), 400);
+    saveTimer = setTimeout(() => store.save('last', { name: S.fileName, bytes: S.bytes, upPath: S.upPath, job: S.job, scale: S.scale, lock: S.lock, savedAt: Date.now() }), 400);
   }
 
   // ---------- rendering ----------
@@ -206,7 +232,7 @@ export function mountApp(root, host, engine) {
     const keepTop = scrolled ? scrolled.scrollTop : 0;
     const step = S.step;
     const lede = [
-      'Drop a STEP file. ncCAM finds the pockets, holes and outline for you.',
+      'Drop a STEP, STL or 3MF file. ncCAM finds the pockets, holes and outline for you.',
       'Pick the material. ncCAM sets the speeds, feeds and depth of each pass.',
       'Tools are picked from your Tool Library. Change any of them, or just continue.',
       'Watch the cut play through. When it looks right, load it.',
@@ -214,7 +240,7 @@ export function mountApp(root, host, engine) {
     const title = [S.part ? 'Your part' : 'Open your part', 'What are you cutting it from?', 'Here’s the plan', S.simChecks && !S.simChecks.ok ? 'Check the warnings' : 'Ready to cut'][step - 1];
     root.innerHTML = `
       <nav class="ncc-rail" aria-label="Steps">
-        <div class="ncc-rail-head"><div class="ncc-eyebrow">Plugin</div><div class="ncc-rail-title">ncCAM<span class="ncc-beta">Beta</span></div><div class="ncc-rail-sub">STEP file to G-code</div></div>
+        <div class="ncc-rail-head"><div class="ncc-eyebrow">Plugin</div><div class="ncc-rail-title">ncCAM<span class="ncc-beta">Beta</span></div><div class="ncc-rail-sub">STEP, STL or 3MF to G-code</div></div>
         <div class="ncc-steps">${STEPS.map((name, i) => {
           const n = i + 1, cls = n === step ? 'on' : n < S.maxStep || (n < step) ? 'done' : '';
           return `<button class="ncc-step ${cls}" type="button" data-go="${n}" ${n <= S.maxStep ? '' : 'disabled'}><span class="ncc-num">${cls === 'done' ? '✓' : n}</span>${esc(name)}</button>`;
@@ -263,9 +289,9 @@ export function mountApp(root, host, engine) {
     if (!S.part && !S.loading) {
       return `<div class="ncc-drop" data-drop>
         <div class="ncc-drop-icon">${ICONS.upload}</div>
-        <h2>Drop a STEP file here</h2>
-        <p>Export your part from Fusion, Onshape, FreeCAD or SolidWorks as <strong>.step</strong> or <strong>.stp</strong>. Millimetres or inches both work.</p>
-        <label class="ncc-btn" style="display: inline-flex; align-items: center; gap: 8px">Open STEP file<input type="file" accept=".step,.stp,.STEP,.STP" data-file hidden></label>
+        <h2>Drop a STEP, STL or 3MF file here</h2>
+        <p>Export your part from Fusion, Onshape, FreeCAD or SolidWorks as <strong>.step</strong>, or open a mesh: <strong>.stl</strong> or <strong>.3mf</strong> (from a 3D printing site or slicer). Millimetres or inches both work.</p>
+        <label class="ncc-btn" style="display: inline-flex; align-items: center; gap: 8px">Open file<input type="file" accept=".step,.stp,.stl,.3mf,.STEP,.STP,.STL,.3MF" data-file hidden></label>
         ${S.error ? `<div class="ncc-hint bad" style="max-width: 520px">${ICONS.warn}<span>${esc(S.error)}</span></div>` : ''}
         ${S.tools.length ? '' : `<div class="ncc-hint" style="max-width: 520px">${ICONS.info}<span>Your Tool Library is empty. Add your end mills in Settings → Tool Library so ncCAM can pick them.</span></div>`}
       </div>`;
@@ -279,11 +305,12 @@ export function mountApp(root, host, engine) {
             <div style="min-width: 0"><div class="ncc-file-name">${esc(S.fileName)}</div>
             <div class="ncc-file-sub ncc-mono">${a ? `${n(a.size[0])} × ${n(a.size[1])} × ${L(a.size[2])}` : '&nbsp;'}</div></div>
           </div>
-          <label class="ncc-btn muted" style="white-space: nowrap">Open another file<input type="file" accept=".step,.stp,.STEP,.STP" data-file hidden></label>
+          <label class="ncc-btn muted" style="white-space: nowrap">Open another file<input type="file" accept=".step,.stp,.stl,.3mf,.STEP,.STP,.STL,.3MF" data-file hidden></label>
         </div>
         <div data-viewer></div>
       </div>
       <div class="ncc-col ncc-side">
+        ${sizeCard()}
         <div class="ncc-card">
           <div class="ncc-label">Which side faces up?</div>
           <div class="ncc-picks">${SIDES.map(([k, label]) => {
@@ -294,6 +321,23 @@ export function mountApp(root, host, engine) {
         </div>
         ${foundCard()}
         ${planHints(true)}
+      </div>`;
+  }
+
+  // The part's size in the file's X, Y, Z: typed in, together or each alone
+  function sizeCard() {
+    if (!S.fileSize) return '';
+    const val = (k) => { const v = S.fileSize[k] * S.scale[k]; return S.units === 'in' ? Math.round((v / N.units.INCH) * 1000) / 1000 : Math.round(v * 100) / 100; };
+    const pct = S.scale.map((v) => `${Math.round(v * 1000) / 10}%`);
+    const same = S.scale.every((v) => Math.abs(v - S.scale[0]) < 1e-9);
+    const scaled = S.scale.some((v) => Math.abs(v - 1) > 1e-9);
+    // An STL has no unit: a whole part under about 12 across was likely drawn in inches
+    const inches = S.meshKind === 'stl' && !scaled && Math.max(...S.fileSize) < 12;
+    return `<div class="ncc-card">
+        ${toggleRow('lock', 'Keep the proportions', same ? (scaled ? `Scaled to ${pct[0]}` : 'As in the file') : `Scaled ${pct.join(' \u00d7 ')}`, S.lock)}
+        <div class="ncc-fields">${['X', 'Y', 'Z'].map((a, k) => `<div class="ncc-field"><label for="ncc-size${k}">${a} (${S.units})</label><input id="ncc-size${k}" class="ncc-input ncc-mono" inputmode="decimal" data-size="${k}" value="${val(k)}"></div>`).join('')}</div>
+        <div class="ncc-row-sub">In the file\u2019s own X, Y and Z, before turning it.${scaled ? ' <button type="button" class="ncc-link" data-scale="reset">Back to the file\u2019s size</button>' : ''}</div>
+        ${inches ? `<div class="ncc-hint">${ICONS.info}<span>Only ${n(Math.max(...S.fileSize))} across: STL files have no unit, so this may have been drawn in inches. <button type="button" class="ncc-link" data-scale="inch">Make it inches (\u00d7 25.4)</button></span></div>` : ''}
       </div>`;
   }
 
@@ -531,7 +575,7 @@ export function mountApp(root, host, engine) {
       </div>`;
   }
 
-  const programName = () => `${(S.fileName || 'part').replace(/\.(step|stp)$/i, '')}.nc`;
+  const programName = () => `${(S.fileName || 'part').replace(/\.(step|stp|stl|3mf)$/i, '')}.nc`;
 
   function checks() {
     const c = S.simChecks;
@@ -811,6 +855,9 @@ export function mountApp(root, host, engine) {
       if (!S.job.stock.fit && st) Object.assign(S.job.stock, { width: st.width, depth: st.depth, thickness: st.thickness });
       return changed();
     }
+    if (d.toggle === 'lock') { S.lock = !S.lock; if (S.lock && !S.scale.every((v) => v === S.scale[0])) return rescale([S.scale[0], S.scale[0], S.scale[0]]); remember(); return render(); }
+    if (d.scale === 'reset') return rescale([1, 1, 1]);
+    if (d.scale === 'inch') return rescale([N.units.INCH, N.units.INCH, N.units.INCH]);
     if (d.toggle === 'tabs') { S.job.tabs.enabled = !S.job.tabs.enabled; return changed(); }
     if (d.toggle === '3d') { S.job.surface3d = !S.plan?.mode3d; S.job.disabled = {}; S.job.toolOverride = {}; return changed(); }
     if (d.op) { S.job.disabled[d.op] = !S.job.disabled[d.op]; return changed(); }
@@ -851,6 +898,12 @@ export function mountApp(root, host, engine) {
     const t = e.target;
     if (t.matches('[data-file]')) return openFile(t.files[0]);
     if (t.dataset.tool) { S.job.toolOverride[t.dataset.tool] = +t.value || t.value; return changed(); }
+    if (t.dataset.size) {
+      const k = +t.dataset.size, v = parseFloat(String(t.value).replace(',', '.'));
+      if (!(Number.isFinite(v) && v > 0 && S.fileSize[k] > 0)) return render();
+      const f = N.units.toMm(v, S.units) / S.fileSize[k];
+      return rescale(S.lock ? [f, f, f] : S.scale.map((s, i) => (i === k ? f : s)));
+    }
     if (t.dataset.stock) {
       const v = parseFloat(String(t.value).replace(',', '.'));
       if (Number.isFinite(v) && v > 0) S.job.stock[t.dataset.stock] = N.units.toMm(v, S.units);

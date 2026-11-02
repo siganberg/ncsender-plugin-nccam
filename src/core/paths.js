@@ -245,7 +245,9 @@ function finishWalls(path, region, r, fd, zTop, zBottom, maxDepth) {
 function verticalWalls(path, region, above, r, fd, zFrom, z, entry) {
   const lo = above ? C.offset(above, -(r - 0.05)) : null, hi = above ? C.offset(above, -(r + 0.05)) : null;
   const vertical = (q) => !above || (inside(q, lo) && !inside(q, hi));
-  for (const pts of C.simplify(C.cleanLoops(C.offset(region, -r), 0.001), 0.005)) {
+  // 0.02 off the wall: the offset's arcs (0.01) and the simplifying (0.005)
+  // may each cut a corner by that much, never into the part
+  for (const pts of C.simplify(C.cleanLoops(C.offset(region, -(r + 0.02)), 0.001), 0.005)) {
     const loop = new Loop(pts);
     const n = Math.max(8, Math.ceil(loop.length / 0.5));
     const flag = Array.from({ length: n }, (_, i) => vertical(loop.at((i / n) * loop.length)));
@@ -772,7 +774,7 @@ export function toolpaths(p) {
               const layer = op.layers[k], from = layer.zFrom >= p.analysis.top - 1e-6 ? zTop : layer.zFrom;
               pocket(path, area, r, fd, from, layer.z, 0, zTop + 1, entry(k));
               const cut = C.offset(C.offset(area, -r), r);
-              if (cut.length) { swept.push({ zFrom: from, z: layer.z, area: cut }); cleared.layer(cut, from, layer.z); }
+              if (cut.length && op.enabled) { swept.push({ zFrom: from, z: layer.z, area: cut }); cleared.layer(cut, from, layer.z); }
             }
           }
           path.travel = null;
@@ -784,10 +786,12 @@ export function toolpaths(p) {
           for (const area of nearestFirst(C.regions(layer.region), path.at)) pocket(path, area, r, fd, from, layer.z, allow, zTop + 1, entry(k));
           // Opened only at this height: nothing above was cut, so from the top
           for (const area of nearestFirst(C.regions(layer.fresh || []), path.at)) pocket(path, area, r, fd, zTop, layer.z, allow, zTop + 1);
-          if (allow > 0) verticalWalls(path, layer.region, k ? op.layers[k - 1].region : null, r, fd, from, layer.z, entry(k));
+          // Not on the first layer: with nothing above to compare, a sloped
+          // wall would get one too; the ball reaches that high anyway
+          if (allow > 0 && k) verticalWalls(path, layer.exact || layer.region, op.layers[k - 1].exact || op.layers[k - 1].region, r, fd, from, layer.z, entry(k));
           // What this layer swept: the tool's reach inside the region
           const cut = C.offset(C.offset([...layer.region, ...(layer.fresh || [])], -(r + allow)), r);
-          if (cut.length) { swept.push({ zFrom: from, z: layer.z, area: cut }); cleared.layer(cut, from, layer.z); }
+          if (cut.length && op.enabled) { swept.push({ zFrom: from, z: layer.z, area: cut }); cleared.layer(cut, from, layer.z); }
         });
         path.travel = null;
         path.retract();

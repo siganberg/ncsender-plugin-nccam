@@ -120,6 +120,8 @@
   .ncc-toggle[aria-checked="true"]::after { left: 21px; }
 
   .ncc-fields { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+  /* A button that reads as a link (ncSender's dialog styles win without !important) */
+  .ncc-link { background: none !important; border: 0 !important; padding: 0 !important; margin: 0 !important; color: var(--color-accent) !important; font: inherit !important; cursor: pointer; text-decoration: underline; text-underline-offset: 2px; }
   .ncc-field { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
   .ncc-field label { font-size: 12px; color: var(--color-text-secondary); }
   .ncc-input, .ncc-select {
@@ -244,7 +246,7 @@
 <script>
 (function () {
   var PORT = __SERVER_PORT__;
-  var BUILD = '0.1.4-mvytvbpt';
+  var BUILD = '0.1.4-mvyu72sr';
   var base = window.ncSender && typeof window.ncSender.getApiBaseUrl === 'function' ? window.ncSender.getApiBaseUrl(PORT) : '';
   var file = function (name) { return base + '/api/plugins/com.ncsender.nccam/icon?file=' + encodeURIComponent(name); };
   var root = document.getElementById('ncc-root');

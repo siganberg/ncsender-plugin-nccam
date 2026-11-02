@@ -79,6 +79,15 @@ export function transformMesh(mesh, rot) {
   return moved;
 }
 
+// A copy sized by [sx, sy, sz] in its own axes (each > 0).
+export function scaleMesh(mesh, [sx, sy, sz]) {
+  if (sx === 1 && sy === 1 && sz === 1) return mesh;
+  if (!(sx > 0 && sy > 0 && sz > 0)) throw new Error('A size must be more than 0.');
+  const p = mesh.positions, out = new Float64Array(p.length);
+  for (let i = 0; i < p.length; i += 3) { out[i] = p[i] * sx; out[i + 1] = p[i + 1] * sy; out[i + 2] = p[i + 2] * sz; }
+  return { ...mesh, positions: out };
+}
+
 export const orient = (mesh, up) => transformMesh(mesh, rotationToUp(typeof up === 'string' ? UP_DIRECTIONS[up] : up));
 
 // What the top of the part looks like to a 3-axis machine:

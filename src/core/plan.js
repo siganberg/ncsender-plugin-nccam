@@ -224,7 +224,9 @@ export function plan(mesh, tools, job, limits = {}) {
       // Mesh outlines have a point every few tenths: within 0.1 mm still
       // leaves 0.2 of ALLOW_3D for the finish, and halves the work of the
       // clearing rings (each one an offset of the whole outline)
-      const layer = { zFrom, z: bottom ? -job.throughDepth : z, region: C.simplify(region, SIMPLIFY_3D), fresh: C.area(fresh) >= TINY && C.offset(fresh, -0.5).length ? C.simplify(fresh, SIMPLIFY_3D) : [] };
+      // exact: the outline itself, for what cuts right to it (wall laps, rest
+      // roughing); region, simplified, for the clearing that leaves ALLOW_3D
+      const layer = { zFrom, z: bottom ? -job.throughDepth : z, exact: region, region: C.simplify(region, SIMPLIFY_3D), fresh: C.area(fresh) >= TINY && C.offset(fresh, -0.5).length ? C.simplify(fresh, SIMPLIFY_3D) : [] };
       if (C.area(region) >= TINY || layer.fresh.length) layers.push(layer);
       prev = open;
       zFrom = z;
@@ -234,11 +236,12 @@ export function plan(mesh, tools, job, limits = {}) {
     const r3 = add({ kind: 'rough3d', label: 'Rough the 3D shape', tool: take(rough), zTop: analysis.top, zBottom: layers[layers.length - 1].z, region: ring, layers, allowance: ALLOW_3D, detail: `${layers.length} layers · ${L(ALLOW_3D)} left` });
     // What the roughing end mill can't get into (holes, slots, tight
     // corners): a smaller one clears it, layer by layer, to the wall
-    const rr = rough.diameter / 2;
+    // The roughing tool as it will run (the user may have picked another)
+    const rr = (tools.find((t) => t.id === job.toolOverride?.[r3.id]) || rough).diameter / 2;
     // Only pieces at least NARROW_3D across: a curved outline has slivers in
     // every hollow, too thin to matter and too many to chase with a tool
     const narrow = layers.map((l) => {
-      const inner = C.offset(l.region, -ALLOW_3D);
+      const inner = C.offset(l.exact, -ALLOW_3D);
       const bits = C.cleanLoops(C.difference(inner, opened(inner, rr)), TINY);
       return C.regions(bits).filter((g) => C.offset(g, -NARROW_3D / 2).length).flat();
     });
@@ -252,7 +255,7 @@ export function plan(mesh, tools, job, limits = {}) {
       const small = smaller.find((t) => C.area(leftBy(t)) <= base * 0.25) || smaller[smaller.length - 1];
       if (small) {
         const sr = small.diameter / 2;
-        const rest = layers.map((l, k) => ({ zFrom: l.zFrom, z: l.z, region: C.area(narrow[k]) >= TINY ? C.simplify(C.intersection(l.region, C.offset(narrow[k], 2 * sr + 0.5)), SIMPLIFY_3D) : [] })).filter((l) => l.region.length);
+        const rest = layers.map((l, k) => ({ zFrom: l.zFrom, z: l.z, region: C.area(narrow[k]) >= TINY ? C.intersection(l.exact, C.offset(narrow[k], 2 * sr + 0.5)) : [] })).filter((l) => l.region.length);
         after = add({ kind: 'rest3d', label: 'Clear where the big end mill can\u2019t reach', tool: take(small), zTop: analysis.top, zBottom: rest[rest.length - 1].z, region: C.union(rest.flatMap((l) => l.region)), layers: rest, after: r3.id, detail: `${rest.length} layers · holes, slots, corners` }).id;
       }
       const tool = small || rough;

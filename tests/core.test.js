@@ -499,3 +499,173 @@ test('the simulation still catches a rapid into material on a coarse grid', () =
     assert.equal(run(clear, cell), 0, `clear, ${cell}`);
   }
 });
+
+// How far a flat end mill's moves go into the part, exactly: at points
+// along each cutting move, the tool's bottom disc against the part's
+// section just above it (positive: into the part).
+function flatGouge(mesh, op) {
+  const r = op.tool.diameter / 2, cache = new Map();
+  // Just above z; a slice through an edge can leave a sliver loop, so a
+  // little higher until it doesn't
+  const sec = (z) => {
+    const k = z.toFixed(3);
+    if (!cache.has(k)) {
+      let L;
+      for (const e of [0.002, 0.0037, 0.0051, 0.0077, 0.0093]) { L = N.slice(mesh, z + e); if (!L.some((l) => Math.abs(N.clip.loopArea(l)) < 1e-3)) break; }
+      cache.set(k, L);
+    }
+    return cache.get(k);
+  };
+  const segDist = (px, py, a, b) => { const dx = b[0] - a[0], dy = b[1] - a[1], L = dx * dx + dy * dy; const t = L ? Math.max(0, Math.min(1, ((px - a[0]) * dx + (py - a[1]) * dy) / L)) : 0; return Math.hypot(a[0] + dx * t - px, a[1] + dy * t - py); };
+  let worst = 0, prev = null;
+  for (const m of op.moves) {
+    if (prev && !m.r && m.z > 0.01) {
+      const steps = Math.max(1, Math.ceil(Math.hypot(m.x - prev.x, m.y - prev.y) / 0.2));
+      for (let k = 0; k <= steps; k++) {
+        const t = k / steps, x = prev.x + (m.x - prev.x) * t, y = prev.y + (m.y - prev.y) * t;
+        let inside = false, d = Infinity;
+        for (const l of sec(Math.round((prev.z + (m.z - prev.z) * t) * 1000) / 1000)) {
+          if (N.clip.pointInLoop([x, y], l)) inside = !inside;
+          for (let i = 0; i < l.length; i++) d = Math.min(d, segDist(x, y, l[i], l[(i + 1) % l.length]));
+        }
+        worst = Math.max(worst, inside ? r + d : r - d);
+      }
+    }
+    prev = m;
+  }
+  return worst;
+}
+
+// A closed mesh of square columns, height H(i, j) (1 mm cells).
+function columns(H, nx, ny) {
+  const pos = [], idx = [];
+  const quad = (a, b, c, d) => { const o = pos.length / 3; pos.push(...a, ...b, ...c, ...d); idx.push(o, o + 1, o + 2, o, o + 2, o + 3); };
+  const h = (i, j) => (i < 0 || j < 0 || i >= nx || j >= ny ? 0 : H(i, j));
+  for (let j = 0; j < ny; j++) for (let i = 0; i < nx; i++) {
+    const z = h(i, j);
+    if (z <= 0) continue;
+    quad([i, j, z], [i + 1, j, z], [i + 1, j + 1, z], [i, j + 1, z]);
+    quad([i, j, 0], [i, j + 1, 0], [i + 1, j + 1, 0], [i + 1, j, 0]);
+    const e = h(i + 1, j); if (e < z) quad([i + 1, j, e], [i + 1, j + 1, e], [i + 1, j + 1, z], [i + 1, j, z]);
+    const w = h(i - 1, j); if (w < z) quad([i, j + 1, w], [i, j, w], [i, j, z], [i, j + 1, z]);
+    const n = h(i, j + 1); if (n < z) quad([i + 1, j + 1, n], [i, j + 1, n], [i, j + 1, z], [i + 1, j + 1, z]);
+    const s = h(i, j - 1); if (s < z) quad([i, j, s], [i + 1, j, s], [i + 1, j, z], [i, j, z]);
+  }
+  return { positions: Float64Array.from(pos), indices: Uint32Array.from(idx), faces: [], solids: 1, names: [] };
+}
+// A 60 x 60 x 12 block, a 30 x 30 pocket 6 deep, a 4 mm slot 4 deeper in its floor
+const slotPart = () => columns((i, j) => (i >= 28 && i < 32 && j >= 20 && j < 40 ? 2 : i >= 15 && i < 45 && j >= 15 && j < 45 ? 6 : 12), 60, 60);
+
+test('3D roughing, its wall laps and rest roughing never cut into the part', async () => {
+  const lib = N.normalizeTools([...LIBRARY.map((t) => ({ ...t, dimensions: undefined })), { id: 9, toolId: 9, name: 'ball', type: 'ball', diameter: 6.35 }]);
+  const parts = { dome: domeOnPlinth(), slot: slotPart(), stepped: await loadStep('stepped.step'), plate: await loadStep('plate.step') };
+  for (const [name, raw] of Object.entries(parts)) {
+    const mesh = N.orient(raw, 'top');
+    const p = N.toolpaths(N.plan(mesh, lib, { ...N.defaultJob(N.analyze(mesh)), surface3d: true }));
+    for (const op of p.ops.filter((o) => o.kind === 'rough3d' || o.kind === 'rest3d')) {
+      assert.ok(flatGouge(mesh, op) < 0.005, `${name} ${op.kind}: ${flatGouge(mesh, op)} mm into the part`);
+    }
+  }
+});
+
+test('with the 3D roughing switched off, rest roughing never rapids into stock', () => {
+  const lib = N.normalizeTools([...LIBRARY.map((t) => ({ ...t, dimensions: undefined })), { id: 9, toolId: 9, name: 'ball', type: 'ball', diameter: 6.35 }]);
+  const mesh = N.orient(slotPart(), 'top');
+  const job = { ...N.defaultJob(N.analyze(mesh)), surface3d: true };
+  const rough = N.plan(mesh, lib, job).ops.find((o) => o.kind === 'rough3d');
+  const p = N.toolpaths(N.plan(mesh, lib, { ...job, disabled: { [rough.id]: true } }));
+  assert.ok(p.ops.some((o) => o.kind === 'rest3d' && o.enabled));
+  assert.equal(N.simulate(p, 0.2).collisions.length, 0);
+});
+
+// The 12 outward triangles of a w x d x h box, as corner triples
+function boxTris(w, d, h) {
+  const c = (i) => [i & 1 ? w : 0, i & 2 ? d : 0, i & 4 ? h : 0];
+  return [[0, 2, 1], [1, 2, 3], [4, 5, 6], [5, 7, 6], [0, 1, 4], [1, 5, 4], [2, 6, 3], [3, 6, 7], [0, 4, 2], [2, 4, 6], [1, 3, 5], [3, 7, 5]].map((t) => t.map(c));
+}
+
+test('STL, binary and text, reads as mm', async () => {
+  const tris = boxTris(30, 20, 10);
+  const bin = new Uint8Array(84 + tris.length * 50), dv = new DataView(bin.buffer);
+  dv.setUint32(80, tris.length, true);
+  tris.forEach((t, k) => t.flat().forEach((v, i) => dv.setFloat32(84 + k * 50 + 12 + i * 4, v, true)));
+  const txt = `solid box\n${tris.map((t) => `facet normal 0 0 0\nouter loop\n${t.map((p) => `vertex ${p.join(' ')}`).join('\n')}\nendloop\nendfacet`).join('\n')}\nendsolid box\n`;
+  for (const [what, bytes] of [['binary', bin], ['text', new TextEncoder().encode(txt)]]) {
+    const m = await N.meshFromFile(bytes, `box.${what === 'binary' ? 'STL' : 'stl'}`);
+    assert.deepEqual(N.meshBounds(m).size, [30, 20, 10], what);
+    assert.ok(Math.abs(N.meshVolume(m) - 6000) < 1e-6, what);
+    assert.equal(N.analyze(N.orient(m, 'top')).undercut, false, what);
+  }
+  await assert.rejects(N.meshFromFile(new TextEncoder().encode('<html>not found</html>'), 'x.stl'));
+});
+
+// A zip (stored, or deflated where asked), zip64 if asked
+async function zip(files, zip64 = false) {
+  const enc = new TextEncoder(), parts = [], central = [];
+  let off = 0;
+  for (const [name, text, deflate] of files) {
+    const raw = enc.encode(text);
+    const data = deflate ? new Uint8Array(await new Response(new Blob([raw]).stream().pipeThrough(new CompressionStream('deflate-raw'))).arrayBuffer()) : raw;
+    const nm = enc.encode(name), loc = new Uint8Array(30 + nm.length), lv = new DataView(loc.buffer);
+    lv.setUint32(0, 0x04034b50, true); lv.setUint16(8, deflate ? 8 : 0, true); lv.setUint32(18, data.length, true); lv.setUint32(22, raw.length, true); lv.setUint16(26, nm.length, true); loc.set(nm, 30);
+    const extra = zip64 ? 28 : 0, cen = new Uint8Array(46 + nm.length + extra), cv = new DataView(cen.buffer);
+    cv.setUint32(0, 0x02014b50, true); cv.setUint16(10, deflate ? 8 : 0, true);
+    cv.setUint32(20, zip64 ? 0xffffffff : data.length, true); cv.setUint32(24, zip64 ? 0xffffffff : raw.length, true);
+    cv.setUint16(28, nm.length, true); cv.setUint16(30, extra, true); cv.setUint32(42, zip64 ? 0xffffffff : off, true); cen.set(nm, 46);
+    if (zip64) { const e = 46 + nm.length; cv.setUint16(e, 1, true); cv.setUint16(e + 2, 24, true); cv.setBigUint64(e + 4, BigInt(raw.length), true); cv.setBigUint64(e + 12, BigInt(data.length), true); cv.setBigUint64(e + 20, BigInt(off), true); }
+    parts.push(loc, data); central.push(cen); off += loc.length + data.length;
+  }
+  const cdSize = central.reduce((n, c) => n + c.length, 0), tail = [];
+  if (zip64) {
+    const z = new Uint8Array(56), zv = new DataView(z.buffer);
+    zv.setUint32(0, 0x06064b50, true); zv.setBigUint64(32, BigInt(files.length), true); zv.setBigUint64(40, BigInt(cdSize), true); zv.setBigUint64(48, BigInt(off), true);
+    const loc = new Uint8Array(20), lv = new DataView(loc.buffer);
+    lv.setUint32(0, 0x07064b50, true); lv.setBigUint64(8, BigInt(off + cdSize), true);
+    tail.push(z, loc);
+  }
+  const end = new Uint8Array(22), ev = new DataView(end.buffer);
+  ev.setUint32(0, 0x06054b50, true); ev.setUint16(10, zip64 ? 0xffff : files.length, true); ev.setUint32(12, cdSize, true); ev.setUint32(16, zip64 ? 0xffffffff : off, true);
+  const all = [...parts, ...central, ...tail, end], out = new Uint8Array(all.reduce((n, a) => n + a.length, 0));
+  let p = 0; for (const a of all) { out.set(a, p); p += a.length; }
+  return out;
+}
+
+test('3MF: units, objects in other files, transforms, mirroring, modifiers, zip64', async () => {
+  const tris = boxTris(1, 1, 1);
+  const pts = tris.flat();
+  const mesh = `<mesh><vertices>${pts.map((p) => `<vertex x="${p[0]}" y="${p[1]}" z="${p[2]}"/>`).join('')}</vertices><triangles>${tris.map((_, k) => `<triangle v1="${k * 3}" v2="${k * 3 + 1}" v3="${k * 3 + 2}"/>`).join('')}</triangles></mesh>`;
+  const ns = 'xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02" xmlns:p="http://schemas.microsoft.com/3dmanufacturing/production/2015/06"';
+  // In inches: a 1" cube stretched to 2 x 1 x 1 by a component, and a mirrored
+  // copy moved 3" along X; a print modifier that isn't geometry
+  const objects = `<?xml version="1.0"?><model unit="inch" ${ns}><resources><object id="1" type="model">${mesh}</object><object id="2" type="other">${mesh}</object></resources><build/></model>`;
+  const root = `<?xml version="1.0"?><model unit="inch" ${ns}><resources>
+    <object id="5" type="model"><components><component p:path="/3D/Objects/o.model" objectid="1" transform="2 0 0 0 1 0 0 0 1 0 0 0"/><component p:path="/3D/Objects/o.model" objectid="2"/></components></object>
+  </resources><build><item objectid="5"/><item objectid="5" transform="-1 0 0 0 1 0 0 0 1 5 0 0"/></build></model>`;
+  const rels = `<?xml version="1.0"?><Relationships><Relationship Target="/3D/3dmodel.model" Id="r" Type="http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel"/></Relationships>`;
+  for (const zip64 of [false, true]) {
+    const bytes = await zip([['_rels/.rels', rels], ['3D/3dmodel.model', root], ['3D/Objects/o.model', objects, true]], zip64);
+    const m = await N.meshFromFile(bytes, 'part.3mf');
+    assert.equal(m.solids, 2, `zip64 ${zip64}`);
+    // 0..2" and 3..5" along X, 1" deep and tall
+    assert.deepEqual(N.meshBounds(m).min.map((v) => +v.toFixed(6)), [0, 0, 0]);
+    assert.deepEqual(N.meshBounds(m).size.map((v) => +v.toFixed(6)), [127, 25.4, 25.4]);
+    // Both copies outward (the mirrored one turned back): volume adds up
+    assert.ok(Math.abs(N.meshVolume(m) - 2 * 2 * 25.4 ** 3) < 1e-3);
+  }
+});
+
+test('a part scales in X, Y and Z together or each alone', () => {
+  const box = { positions: Float64Array.from(boxTris(30, 20, 10).flat(2)), indices: Uint32Array.from({ length: 36 }, (_, i) => i), faces: [], solids: 1, names: [] };
+  assert.equal(N.scaleMesh(box, [1, 1, 1]), box);
+  const even = N.scaleMesh(box, [2, 2, 2]), flat = N.scaleMesh(box, [1, 1, 0.5]);
+  assert.deepEqual(N.meshBounds(even).size, [60, 40, 20]);
+  assert.ok(Math.abs(N.meshVolume(even) - 8 * 6000) < 1e-6);
+  assert.deepEqual(N.meshBounds(flat).size, [30, 20, 5]);
+  assert.ok(Math.abs(N.meshVolume(flat) - 3000) < 1e-6);
+  assert.deepEqual(N.meshBounds(box).size, [30, 20, 10]); // the original is untouched
+  assert.throws(() => N.scaleMesh(box, [1, 0, 1]));
+  // A dome made flatter gets fewer roughing layers
+  const dome = domeOnPlinth();
+  const layers = (m) => N.plan(N.orient(m, 'top'), BALL, { ...N.defaultJob(N.analyze(N.orient(m, 'top'))), surface3d: true }).ops.find((o) => o.kind === 'rough3d').layers.length;
+  assert.ok(layers(N.scaleMesh(dome, [1, 1, 0.5])) < layers(dome));
+});

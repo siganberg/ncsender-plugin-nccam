@@ -1,5 +1,5 @@
 // The heavy work, run in a Web Worker (or in the page if workers are
-// blocked): reading the STEP file, planning and making the toolpaths.
+// blocked): reading the part's file, planning and making the toolpaths.
 // Messages: { id, type, ...args } -> { id, ok, result | error }.
 import occtFactory from 'occt-import-js';
 import * as N from './core/index.js';
@@ -7,22 +7,33 @@ import * as N from './core/index.js';
 const STEP_OPTIONS = { linearUnit: 'millimeter', linearDeflectionType: 'absolute_value', linearDeflection: 0.02, angularDeflection: 0.1 };
 
 export function createEngine() {
-  let occt = null, raw = null, part = null, wasm = null;
+  // source: the part as read (mm); raw: scaled; part: scaled and turned
+  let occt = null, source = null, raw = null, part = null, wasm = null;
+  const sized = (scale) => {
+    raw = N.scaleMesh(source, scale);
+    return { solids: raw.solids, size: N.meshBounds(raw).size, fileSize: N.meshBounds(source).size, mesh: source.mesh, ...N.sides(raw) };
+  };
 
   const handlers = {
     async init({ wasmBinary }) { wasm = wasmBinary; return true; },
 
-    async load({ bytes }) {
+    // name picks the reader (.stl, .3mf, else STEP); scale: [x, y, z]
+    async load({ bytes, name = '', scale = [1, 1, 1] }) {
+      source = await N.meshFromFile(bytes, name);
+      if (source) source.mesh = /\.stl$/i.test(name) ? 'stl' : '3mf';
       // A mesh saved as STEP reads in JS in a moment; CAD solids go to OCCT
-      raw = N.meshFromFacetedStep(new Uint8Array(bytes));
-      if (!raw) {
+      else source = N.meshFromFacetedStep(new Uint8Array(bytes));
+      if (!source) {
         occt ||= await occtFactory({ wasmBinary: wasm });
         const r = occt.ReadStepFile(new Uint8Array(bytes), STEP_OPTIONS);
-        if (!r.success || !r.meshes?.length) throw new Error('This file has no solid ncCAM can read. Export it again as STEP (AP214 or AP242).');
-        raw = N.meshFromOcct(r);
+        if (!r.success || !r.meshes?.length) throw new Error('This file has no solid ncCAM can read. Export it again as STEP (AP214 or AP242), STL or 3MF.');
+        source = N.meshFromOcct(r);
       }
-      return { solids: raw.solids, size: N.meshBounds(raw).size, ...N.sides(raw) };
+      return sized(scale);
     },
+
+    // The part at another size, in the file's own X, Y, Z (turn it again after)
+    async rescale({ scale }) { return sized(scale); },
 
     // up: a side name or a direction (from a clicked face)
     async orient({ up }) {
