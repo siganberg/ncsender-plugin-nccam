@@ -13,10 +13,14 @@ export function createEngine() {
     async init({ wasmBinary }) { wasm = wasmBinary; return true; },
 
     async load({ bytes }) {
-      occt ||= await occtFactory({ wasmBinary: wasm });
-      const r = occt.ReadStepFile(new Uint8Array(bytes), STEP_OPTIONS);
-      if (!r.success || !r.meshes?.length) throw new Error('This file has no solid ncCAM can read. Export it again as STEP (AP214 or AP242).');
-      raw = N.meshFromOcct(r);
+      // A mesh saved as STEP reads in JS in a moment; CAD solids go to OCCT
+      raw = N.meshFromFacetedStep(new Uint8Array(bytes));
+      if (!raw) {
+        occt ||= await occtFactory({ wasmBinary: wasm });
+        const r = occt.ReadStepFile(new Uint8Array(bytes), STEP_OPTIONS);
+        if (!r.success || !r.meshes?.length) throw new Error('This file has no solid ncCAM can read. Export it again as STEP (AP214 or AP242).');
+        raw = N.meshFromOcct(r);
+      }
       return { solids: raw.solids, size: N.meshBounds(raw).size, ...N.sides(raw) };
     },
 

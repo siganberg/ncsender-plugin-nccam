@@ -31,8 +31,13 @@ export function unionMany(paths, batch = 256) {
   while (parts.length > batch) {
     const next = [];
     for (let i = 0; i < parts.length; i += batch) next.push(union(parts.slice(i, i + batch)));
-    parts = next.flat();
-    if (next.length === 1) return parts;
+    const merged = next.flat();
+    if (next.length === 1) return merged;
+    // Batches only merge neighbours that share a batch: a mesh whose
+    // triangles come in no order (a faceted STEP) barely shrinks, so pass
+    // after pass would never end. Then one union of everything left.
+    if (merged.length > parts.length / 2) return union(merged);
+    parts = merged;
   }
   return union(parts);
 }

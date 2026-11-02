@@ -235,3 +235,58 @@ test('Slot numbering: a tool in no slot gets a number past the magazine, never a
   assert.equal(t(5), 8);
   assert.equal(N.toolNumber(lib[2], N.makeNumbering('toolId', lib, 6)), 3);
 });
+
+// A box as a faceted STEP file (a mesh saved as STEP), outward triangles.
+function facetedBox(w, d, h, unit = 'SI_UNIT(.MILLI.,.METRE.)', extra = '') {
+  const c = (i) => [i & 1 ? w : 0, i & 2 ? d : 0, i & 4 ? h : 0];
+  const tris = [[0, 2, 1], [1, 2, 3], [4, 5, 6], [5, 7, 6], [0, 1, 4], [1, 5, 4], [2, 6, 3], [3, 6, 7], [0, 4, 2], [2, 4, 6], [1, 3, 5], [3, 7, 5]];
+  let id = 100;
+  const lines = [], faces = [];
+  for (const t of tris) {
+    const pts = t.map((i) => { lines.push(`#${++id}=CARTESIAN_POINT('',(${c(i).join(',')}));`); return `#${id}`; });
+    lines.push(`#${++id}=POLY_LOOP('',(${pts.join(',')}));`);
+    lines.push(`#${++id}=FACE_OUTER_BOUND('',#${id - 1},.T.);`);
+    lines.push(`#${++id}=FACE_SURFACE('',(#${id - 1}),#9,.T.);`);
+    faces.push(`#${id}`);
+  }
+  return ['ISO-10303-21;', 'HEADER;', 'ENDSEC;', 'DATA;',
+    `#1=(LENGTH_UNIT() NAMED_UNIT(*) ${unit});`, ...lines, extra,
+    `#2=CLOSED_SHELL('',(${faces.join(',')}));`, "#3=FACETED_BREP('',#2);", 'ENDSEC;', 'END-ISO-10303-21;'].join('\n');
+}
+
+test('a mesh saved as STEP is read without OCCT, in its own unit', () => {
+  const mm = N.meshFromFacetedStep(new TextEncoder().encode(facetedBox(30, 20, 10)));
+  assert.equal(mm.indices.length / 3, 12);
+  assert.deepEqual(N.meshBounds(mm).size, [30, 20, 10]);
+  assert.ok(Math.abs(N.meshVolume(mm) - 6000) < 1e-6);
+  const a = N.analyze(N.orient(mm, 'top'));
+  assert.deepEqual(a.floors, [10]);
+  assert.equal(a.undercut, false);
+  const metre = N.meshFromFacetedStep(facetedBox(0.03, 0.02, 0.01, 'SI_UNIT($,.METRE.)'));
+  assert.deepEqual(N.meshBounds(metre).size.map((v) => +v.toFixed(9)), [30, 20, 10]);
+  const inch = N.meshFromFacetedStep(facetedBox(1, 1, 1, "CONVERSION_BASED_UNIT('INCH',#5) LENGTH_UNIT() NAMED_UNIT(#6)"));
+  assert.deepEqual(N.meshBounds(inch).size, [25.4, 25.4, 25.4]);
+});
+
+test('a STEP file with real CAD faces, or an unknown unit, goes to OCCT', async () => {
+  const { readFileSync } = await import('node:fs');
+  for (const f of ['bracket.step', 'chamfered.step', 'onshape-plate.step']) {
+    assert.equal(N.meshFromFacetedStep(readFileSync(new URL(`./fixtures/${f}`, import.meta.url))), null, f);
+  }
+  assert.equal(N.meshFromFacetedStep(facetedBox(1, 1, 1, "CONVERSION_BASED_UNIT('FURLONG',#5) LENGTH_UNIT() NAMED_UNIT(#6)")), null);
+  assert.equal(N.meshFromFacetedStep(facetedBox(1, 1, 1, undefined, "#99=ADVANCED_FACE('',(#1),#9,.T.);")), null);
+});
+
+test('triangles in no order merge in one go (a faceted mask hung here)', () => {
+  // A 60 x 60 grid of squares, two triangles each, shuffled
+  const tris = [];
+  for (let i = 0; i < 60; i++) for (let j = 0; j < 60; j++) {
+    tris.push([[i, j], [i + 1, j], [i + 1, j + 1]], [[i, j], [i + 1, j + 1], [i, j + 1]]);
+  }
+  let s = 1;
+  for (let k = tris.length - 1; k > 0; k--) { s = (s * 16807) % 2147483647; const r = s % (k + 1); [tris[k], tris[r]] = [tris[r], tris[k]]; }
+  const t = Date.now();
+  const u = N.clip.unionMany(tris);
+  assert.ok(Date.now() - t < 10000);
+  assert.ok(Math.abs(N.clip.area(u) - 3600) < 0.01);
+});
