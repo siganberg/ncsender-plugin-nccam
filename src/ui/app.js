@@ -32,6 +32,7 @@ const ICONS = {
   cutout: svg('<rect x="3" y="5" width="18" height="14" rx="2" stroke-dasharray="3 2.5"/>'),
   rough3d: svg('<path d="M3 19h4v-4h3v-4h4v4h3v4h4"/>'),
   finish3d: svg('<path d="M3 18c3 0 4-9 9-9s6 9 9 9"/>'),
+  rest3d: svg('<path d="M3 19h4v-4h3v-4h4v4h3v4h4"/><circle cx="12" cy="17" r="1.5"/>'),
 };
 
 const SIDE_ICONS = {
@@ -300,7 +301,7 @@ export function mountApp(root, host, engine) {
     if (!S.plan) return `<div class="ncc-card"><div class="ncc-label">Found in this part</div><div class="ncc-row-sub">${S.planning ? 'Looking…' : ''}</div></div>`;
     // The same feature more than once is one line: "5 pockets, through"
     const groups = new Map();
-    for (const o of S.plan.ops.filter((x) => x.kind !== 'face' && x.kind !== 'corners' && x.kind !== 'finish3d')) {
+    for (const o of S.plan.ops.filter((x) => x.kind !== 'face' && x.kind !== 'corners' && x.kind !== 'finish3d' && x.kind !== 'rest3d')) {
       const name = featureName(o);
       const g = groups.get(name) || { o, name, n: 0 };
       g.n += o.count || 1;
@@ -329,7 +330,7 @@ export function mountApp(root, host, engine) {
 
   function modelOverlay() {
     if (!S.plan) return '';
-    const kinds = [...new Set(S.plan.ops.filter((o) => o.kind !== 'face' && o.kind !== 'corners' && o.kind !== 'finish3d').map((o) => o.kind))];
+    const kinds = [...new Set(S.plan.ops.filter((o) => o.kind !== 'face' && o.kind !== 'corners' && o.kind !== 'finish3d' && o.kind !== 'rest3d').map((o) => o.kind))];
     const label = { pocket: 'Pockets', hole: 'Holes', drill: 'Holes', step: 'Steps', cutout: 'Outline', rough3d: '3D surface' };
     return `<div class="ncc-overlay tr">${kinds.map((k) => `<span class="ncc-chip"><span class="ncc-swatch" style="background: ${OP_COLORS[k]}"></span>${label[k]}</span>`).join('')}</div>
       <div class="ncc-overlay bl"><span class="ncc-chip">Drag to rotate</span><span class="ncc-chip">Scroll to zoom</span><span class="ncc-chip">Click a face to put it on top</span></div>`;
@@ -473,11 +474,12 @@ export function mountApp(root, host, engine) {
 
   // Curved faces cut in 3D, or left square: shown when the part has any
   function threeD() {
-    const on = S.plan.ops.some((o) => o.kind === 'rough3d');
+    // What was asked for (or chosen from the shape), and whether it could be done
+    const on = !!S.plan.mode3d, done = !!S.plan.did3d;
     if (!on && !S.plan.analysis.sloped) return '';
     return `<div class="ncc-op" style="margin-bottom: 10px">
         <div class="ncc-op-icon" style="background: color-mix(in srgb, ${OP_COLORS.finish3d} 16%, transparent); color: ${OP_COLORS.finish3d}">${ICONS.finish3d}</div>
-        <div class="ncc-op-text"><div class="ncc-op-title">Cut curved faces in 3D</div><div class="ncc-op-sub">${on ? 'Roughed in layers, then a ball end mill follows the surface.' : 'Off: sloped and curved faces are left square.'}</div></div>
+        <div class="ncc-op-text"><div class="ncc-op-title">Cut curved faces in 3D</div><div class="ncc-op-sub">${!on ? 'Off: sloped and curved faces are left square.' : done ? 'Roughed in layers, then a ball end mill follows the surface.' : 'On, but no end mill is long enough: cut in 2.5D for now.'}</div></div>
         <button class="ncc-toggle" type="button" role="switch" aria-checked="${on}" aria-label="Cut curved faces in 3D" data-toggle="3d"></button>
       </div>`;
   }
@@ -810,7 +812,7 @@ export function mountApp(root, host, engine) {
       return changed();
     }
     if (d.toggle === 'tabs') { S.job.tabs.enabled = !S.job.tabs.enabled; return changed(); }
-    if (d.toggle === '3d') { S.job.surface3d = !S.plan?.ops.some((o) => o.kind === 'rough3d'); S.job.disabled = {}; S.job.toolOverride = {}; return changed(); }
+    if (d.toggle === '3d') { S.job.surface3d = !S.plan?.mode3d; S.job.disabled = {}; S.job.toolOverride = {}; return changed(); }
     if (d.op) { S.job.disabled[d.op] = !S.job.disabled[d.op]; return changed(); }
     if (d.speed) { PLAY.speed = +d.speed; return updatePlaybar(); }
     if (d.act === 'play') {

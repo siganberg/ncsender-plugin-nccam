@@ -54,6 +54,22 @@ function* entities(text) {
   }
 }
 
+// A flat polygon turns the same way at every corner (about its normal).
+function convex(vs) {
+  const n = [0, 0, 0];
+  for (let i = 0; i < vs.length; i++) { // Newell's normal
+    const a = vs[i], b = vs[(i + 1) % vs.length];
+    n[0] += (a[1] - b[1]) * (a[2] + b[2]); n[1] += (a[2] - b[2]) * (a[0] + b[0]); n[2] += (a[0] - b[0]) * (a[1] + b[1]);
+  }
+  for (let i = 0; i < vs.length; i++) {
+    const a = vs[i], b = vs[(i + 1) % vs.length], c = vs[(i + 2) % vs.length];
+    const u = [b[0] - a[0], b[1] - a[1], b[2] - a[2]], w = [c[0] - b[0], c[1] - b[1], c[2] - b[2]];
+    const turn = (u[1] * w[2] - u[2] * w[1]) * n[0] + (u[2] * w[0] - u[0] * w[2]) * n[1] + (u[0] * w[1] - u[1] * w[0]) * n[2];
+    if (turn < -1e-12) return false;
+  }
+  return true;
+}
+
 export function meshFromFacetedStep(bytes) {
   const text = typeof bytes === 'string' ? bytes : new TextDecoder('latin1').decode(bytes);
   // Cheap test first: no POLY_LOOP, not a mesh
@@ -96,13 +112,13 @@ export function meshFromFacetedStep(bytes) {
       const loop = b && loops.get(b.loop);
       if (!loop || loop.length < 3) return null;
       const ids = b.reversed ? loop.slice().reverse() : loop;
+      const vs = ids.map((p) => points.get(p));
+      if (vs.some((v) => !v)) return null;
+      // Split into a fan, which is only right for a convex face: an exporter
+      // that merges flat triangles can write an L-shaped one. OCCT then.
+      if (vs.length > 3 && !convex(vs)) return null;
       const base = pos.length / 3, first = idx.length / 3;
-      for (const p of ids) {
-        const v = points.get(p);
-        if (!v) return null;
-        pos.push(v[0] * scale, v[1] * scale, v[2] * scale);
-      }
-      // A fan: faceted faces are flat and (nearly always) convex
+      for (const v of vs) pos.push(v[0] * scale, v[1] * scale, v[2] * scale);
       for (let k = 1; k + 1 < ids.length; k++) idx.push(base, base + k, base + k + 1);
       out.push({ first, last: idx.length / 3 - 1 });
     }

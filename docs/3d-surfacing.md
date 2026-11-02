@@ -131,13 +131,43 @@ and steady.
 4. UI (done): the "Cut curved faces in 3D" switch (job.surface3d; automatic
    above 20% sloped surface), rows, colours, ball tool drawing, the
    Spoilboard Toolbox note in the flip check.
-5. Next: contour finishing for steep walls, rest finishing, and picking the
-   side up for a 3D part by what the tools can reach (the mask is offered
-   standing 220 mm tall rather than lying 88 mm face up).
+5. Done since: waterlines on walls steeper than 50° (Balanced, Smooth),
+   rest roughing (`rest3d`) with a smaller end mill for holes, slots and
+   corners the roughing end mill can't enter, laps to the wall where a
+   layer's wall is vertical, rapids that come down only onto what earlier
+   layers cleared, and 3D parts offered lying down (height ranks after reach).
+6. Next: faster travel between pockets (every move goes up to the clearance
+   plane: about a fifth of the mask's run time), and scaling (below).
 
 Measured on the 20 000-triangle mask, face up, on a Mac: plan 0.35 s,
 toolpaths 1.9 s (6.5 s face down: to look at), 137 min run time, no gouges
 or rapids into material in the simulation.
+
+## 6. Mesh files and scaling (planned)
+
+Meshes often come without a real size: an STL has no unit, a scan or a
+model from a printing site is whatever size it was made at, and a carving
+is often wanted bigger or smaller than the model.
+
+- **Open STL and 3MF** as well as STEP: STL (binary and ASCII) is triangles
+  with no unit, read as mm; 3MF is a zip of XML with a unit (Bambu Studio
+  writes the mesh in a separate `3D/Objects/*.model`, with the build item's
+  transform). Both become the same mesh `meshFromFacetedStep` returns.
+- **Scale on the Model step**, before choosing the side up: X, Y and Z, each
+  as a size (mm or in, as ncSender is set) or a percentage. Locked together
+  by default (one changes all three, keeping the shape); unlocked, each axis
+  on its own (a relief made shallower, a sign made wider). Quick picks: 25,
+  50, 200 %, and "fit the stock" once a stock size is set.
+- An STL that looks like inches (the whole part under about 10 units across)
+  offers ×25.4 once, rather than guessing.
+- Scaling is a 3x3 diagonal on the mesh, applied in the engine (`transformMesh`
+  already takes a 3x3). It goes before turning, so the axes are the file's;
+  the sizes shown follow the part as turned. It is saved with the job and
+  the file, like the side up.
+- Scaling one axis changes slopes, so whether the part is 3D, its flat
+  floors and its sides are worked out again after scaling.
+- Tests: a cube scaled 2× evenly and 1×1×0.5 keeps its volume ratios; a
+  dome flattened in Z gets fewer layers; an inch STL offers ×25.4.
 
 ## Tests to add
 

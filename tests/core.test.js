@@ -424,3 +424,61 @@ test('a 3D part is offered lying down, not standing on end', () => {
   const plate = N.sides(N.orient(domeOnPlinth(20, 4, 50), 'top'));
   assert.equal(plate.best, 'top');
 });
+
+// Openings inside the part's outline left standing more than 0.5 mm high
+function uncutOpenings(mesh, p) {
+  const { hm } = N.simulate(p, 0.2);
+  const ph = N.partHeights(mesh, hm);
+  const fp = p.ops.find((o) => o.kind === 'cutout').region;
+  let n = 0;
+  for (let i = hm.nx; i < ph.length - hm.nx; i++) {
+    if ([ph[i], ph[i - 1], ph[i + 1], ph[i - hm.nx], ph[i + hm.nx]].some((v) => v !== -Infinity) || hm.h[i] <= 0.5) continue;
+    if (fp.some((l) => N.clip.pointInLoop([hm.x0 + (i % hm.nx) * hm.cell, hm.y0 + Math.floor(i / hm.nx) * hm.cell], l))) n++;
+  }
+  return n;
+}
+
+test('in 3D, holes and slots too narrow for the roughing end mill are cleared by a smaller one', async () => {
+  const lib = N.normalizeTools([...LIBRARY.map((t) => ({ ...t, dimensions: undefined })), { id: 9, toolId: 9, name: 'ball', type: 'ball', diameter: 6.35 }]);
+  for (const f of ['plate.step', 'bracket.step']) {
+    const mesh = N.orient(await loadStep(f), 'top');
+    const p = N.toolpaths(N.plan(mesh, lib, { ...N.defaultJob(N.analyze(mesh)), surface3d: true }));
+    const rest = p.ops.find((o) => o.kind === 'rest3d');
+    assert.ok(rest, f);
+    assert.ok(rest.tool.diameter < 6, f);
+    assert.equal(uncutOpenings(mesh, p), 0, f);
+    const c = check3d(mesh, p);
+    assert.equal(c.gouges, 0, f);
+    assert.equal(c.collisions, 0, f);
+    assert.ok(!p.warnings.some((w) => w.kind === 'notool'), f);
+  }
+  // With nothing smaller, it says so instead of leaving them silently
+  const big = N.normalizeTools([{ id: 1, name: '1/4" flat', type: 'flat', diameter: 6.35 }, { id: 9, name: 'ball', type: 'ball', diameter: 6.35 }]);
+  const plate = N.orient(await loadStep('plate.step'), 'top');
+  assert.ok(N.plan(plate, big, { ...N.defaultJob(N.analyze(plate)), surface3d: true }).warnings.some((w) => w.kind === 'notool' && /stay uncut/.test(w.text)));
+});
+
+test('3D asked for but no end mill reaches: cut in 2.5D, and the switch still shows it is on', async () => {
+  const short = N.normalizeTools(LIBRARY.map((t) => ({ ...t, dimensions: { flute_length: 8 } })));
+  const mesh = N.orient(await loadStep('stepped.step'), 'top');
+  const job = { ...N.defaultJob(N.analyze(mesh)), surface3d: true };
+  const p = N.plan(mesh, short, job);
+  assert.equal(p.mode3d, true);
+  assert.equal(p.did3d, false);
+  assert.ok(p.ops.some((o) => o.kind === 'pocket'));
+  assert.ok(p.warnings.some((w) => w.kind === 'notool' && /2\.5D/.test(w.text)));
+  // Switched off, it stays off
+  assert.equal(N.plan(mesh, short, { ...job, surface3d: false }).mode3d, false);
+});
+
+test('a mesh STEP with a face that is not convex goes to OCCT', () => {
+  // An L-shaped flat face: a fan from its first corner would cover the notch
+  const text = ['ISO-10303-21;', 'HEADER;', 'ENDSEC;', 'DATA;', '#1=(LENGTH_UNIT() NAMED_UNIT(*) SI_UNIT(.MILLI.,.METRE.));',
+    ...[[2, 0], [2, 1], [1, 1], [1, 2], [0, 2], [0, 0]].map(([x, y], i) => `#${10 + i}=CARTESIAN_POINT('',(${x},${y},0.));`),
+    "#20=POLY_LOOP('',(#10,#11,#12,#13,#14,#15));", "#21=FACE_OUTER_BOUND('',#20,.T.);", "#22=FACE_SURFACE('',(#21),#9,.T.);",
+    "#2=CLOSED_SHELL('',(#22));", "#3=FACETED_BREP('',#2);", 'ENDSEC;', 'END-ISO-10303-21;'].join('\n');
+  assert.equal(N.meshFromFacetedStep(text), null);
+  // The same corners in convex order read fine
+  const square = text.replace("(#10,#11,#12,#13,#14,#15)", '(#10,#14,#15)');
+  assert.ok(N.meshFromFacetedStep(square));
+});

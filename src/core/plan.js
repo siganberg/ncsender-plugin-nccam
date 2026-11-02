@@ -21,6 +21,7 @@ const LAYER_3D = 2; // mm: thickest stair the roughing leaves for the ball
 const ALLOW_3D = 0.3; // mm left on the surface for the finishing pass
 const FLOOR_3D = 25; // mm²: a flat floor this big gets a layer of its own
 const SIMPLIFY_3D = 0.1; // mm: roughing outlines may stray this far (< ALLOW_3D)
+const NARROW_3D = 0.5; // mm: narrower leftovers of the roughing aren't chased with a smaller tool
 // Height of the ridges between finishing passes
 export const RIDGE_3D = { fast: 0.1, balanced: 0.05, smooth: 0.02 };
 
@@ -106,7 +107,6 @@ export function plan(mesh, tools, job, limits = {}) {
   const use3d = job.surface3d ?? analysis.slopedShare > SHARE_3D;
   if (analysis.squareEdges) warnings.push({ kind: 'edges', text: 'Chamfers or rounded edges face down on this side, so they are left square.' });
   if (analysis.undercut) warnings.push({ kind: 'undercut', text: 'Some features face the other side, so they can’t be reached from the top. Cut this side, then turn the part over for a second setup.' });
-  if (analysis.sloped && !use3d) warnings.push({ kind: 'sloped', text: 'Sloped or curved faces (chamfers, fillets) aren\u2019t cut in 3D yet, so they are left square.' });
 
   const flats = tools.filter((t) => t.kind === 'flat').sort((a, b) => b.diameter - a.diameter);
   const drills = tools.filter((t) => t.kind === 'drill');
@@ -186,12 +186,14 @@ export function plan(mesh, tools, job, limits = {}) {
   }
 
   // 2. A 3D part: rough it in layers, then finish the surface.
-  if (use3d) plan3d();
+  // 3D unless it was asked for but can't be done (no tool long enough):
+  // then the part is cut in 2.5D, with a warning, rather than not at all
+  const did3d = use3d && plan3d();
   function plan3d() {
     const depth = analysis.top + job.throughDepth;
     const fits = (t) => t.diameter <= maxD && fluteOk(t, depth);
     const rough = flats.find((t) => used.has(t.id) && fits(t)) || flats.find(fits);
-    if (!rough) { warnings.push({ kind: 'notool', text: `No end mill is long enough to rough the 3D shape (${L(depth)}).` }); return; }
+    if (!rough) { warnings.push({ kind: 'notool', text: `No end mill is long enough to rough the 3D shape (${L(depth)}), so it is cut in 2.5D.` }); return false; }
     // A ball near 1/4" for the finish: detail without too many passes
     const balls = tools.filter((t) => t.kind === 'ball' && fits(t)).sort((a, b) => Math.abs(a.diameter - 6.35) - Math.abs(b.diameter - 6.35));
     const finisher = balls[0] || rough;
@@ -227,15 +229,48 @@ export function plan(mesh, tools, job, limits = {}) {
       prev = open;
       zFrom = z;
     }
-    if (!layers.length) return;
+    if (!layers.length) return false;
     const ridge = RIDGE_3D[job.finish] ?? RIDGE_3D.balanced;
     const r3 = add({ kind: 'rough3d', label: 'Rough the 3D shape', tool: take(rough), zTop: analysis.top, zBottom: layers[layers.length - 1].z, region: ring, layers, allowance: ALLOW_3D, detail: `${layers.length} layers · ${L(ALLOW_3D)} left` });
-    add({ kind: 'finish3d', label: 'Finish the 3D surface', tool: take(finisher), zTop: analysis.top, zBottom: 0, region: footprint, after: r3.id, ridge, detail: `Parallel passes · ${len(ridge, job.units, job.units === 'in' ? 4 : 2)} ridges` });
+    // What the roughing end mill can't get into (holes, slots, tight
+    // corners): a smaller one clears it, layer by layer, to the wall
+    const rr = rough.diameter / 2;
+    // Only pieces at least NARROW_3D across: a curved outline has slivers in
+    // every hollow, too thin to matter and too many to chase with a tool
+    const narrow = layers.map((l) => {
+      const inner = C.offset(l.region, -ALLOW_3D);
+      const bits = C.cleanLoops(C.difference(inner, opened(inner, rr)), TINY);
+      return C.regions(bits).filter((g) => C.offset(g, -NARROW_3D / 2).length).flat();
+    });
+    let after = r3.id;
+    if (narrow.some((x) => C.area(x) >= TINY)) {
+      const smaller = flats.filter((t) => t.diameter < rough.diameter - 1e-6 && fits(t));
+      // What a tool leaves of the narrow places, clearing each layer to the wall
+      const leftBy = (t) => layers.map((l, k) => (C.area(narrow[k]) >= TINY ? C.cleanLoops(C.difference(narrow[k], opened(l.region, t.diameter / 2)), TINY) : [])).flat();
+      // The largest that leaves a quarter or less, else the smallest
+      const base = C.area(narrow.flat());
+      const small = smaller.find((t) => C.area(leftBy(t)) <= base * 0.25) || smaller[smaller.length - 1];
+      if (small) {
+        const sr = small.diameter / 2;
+        const rest = layers.map((l, k) => ({ zFrom: l.zFrom, z: l.z, region: C.area(narrow[k]) >= TINY ? C.simplify(C.intersection(l.region, C.offset(narrow[k], 2 * sr + 0.5)), SIMPLIFY_3D) : [] })).filter((l) => l.region.length);
+        after = add({ kind: 'rest3d', label: 'Clear where the big end mill can\u2019t reach', tool: take(small), zTop: analysis.top, zBottom: rest[rest.length - 1].z, region: C.union(rest.flatMap((l) => l.region)), layers: rest, after: r3.id, detail: `${rest.length} layers · holes, slots, corners` }).id;
+      }
+      const tool = small || rough;
+      const left = leftBy(tool);
+      // Thin wedges are only inside corners, rounded to the tool; anything
+      // half a millimetre across is a hole or slot left standing
+      if (C.offset(left, -0.25).length) warnings.push({ kind: 'notool', text: `Some holes or slots are narrower than ${tool.name} and stay uncut: add a smaller end mill to the Tool Library.` });
+      else if (C.area(left) >= TINY) warnings.push({ kind: 'corners', text: `Inside corners stay rounded to ${L(tool.diameter / 2)}: no smaller end mill in your library.` });
+    }
+    add({ kind: 'finish3d', label: 'Finish the 3D surface', tool: take(finisher), zTop: analysis.top, zBottom: 0, region: footprint, after, ridge, detail: `Parallel passes${job.finish === 'fast' ? '' : ' and waterlines on steep walls'} · ${len(ridge, job.units, job.units === 'in' ? 4 : 2)} ridges`, steep: job.finish !== 'fast' });
     warnings.push({ kind: 'surface3d', text: `Curved faces are cut in 3D: roughed in ${layers.length} layers, then ${finisher.name} follows the surface.` });
+    return true;
   }
 
+  if (analysis.sloped && !did3d) warnings.push({ kind: 'sloped', text: 'Sloped or curved faces (chamfers, fillets) aren\u2019t cut in 3D yet, so they are left square.' });
+
   // 3. Bands from the top down (2.5D: everything else).
-  const levels = use3d ? [] : [analysis.top, ...analysis.floors.filter((z) => z < analysis.top - EPS && z > EPS), 0];
+  const levels = did3d ? [] : [analysis.top, ...analysis.floors.filter((z) => z < analysis.top - EPS && z > EPS), 0];
   // A feature that keeps its shape through several bands (a hole through a
   // pocket's floor height) is one feature from its top to its lowest floor.
   const features = [];
@@ -360,7 +395,7 @@ export function plan(mesh, tools, job, limits = {}) {
     // The part's top on a grid fine enough for the finishing tool
     if (op.kind === 'finish3d') op.surface = surfaceGrid(mesh, stock, Math.min(0.2, op.tool.diameter / 16));
   }
-  return { analysis, stock, zero: zeroPoint(stock, job.zero), ops: order(ops), warnings, job };
+  return { analysis, stock, zero: zeroPoint(stock, job.zero), ops: order(ops), warnings, job, mode3d: use3d, did3d };
 }
 
 // Flatten first and cut out last. In between, an operation waits for any

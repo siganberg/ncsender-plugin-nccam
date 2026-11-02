@@ -11,6 +11,9 @@ const CLEAR = 3; // mm above the stock for moves between cuts
 // Material 3D roughing can leave over the surface: a layer's stair plus the
 // allowance, and a margin. Rapids come down no lower than this above it.
 const LAYER_LEFT = 3.5;
+// A rapid comes down onto a cleared layer only this far inside what it
+// cleared: the machine's and the preview's (grid) slack
+const ENTRY_MARGIN = 0.5;
 
 export function depthLevels(zTop, zBottom, stepdown) {
   const n = Math.max(1, Math.ceil((zTop - zBottom) / stepdown - 1e-6));
@@ -172,7 +175,9 @@ function linkClear(a, b, allowed) {
 
 // lift: how high to go over what's in the way between loops (in 3D the
 // part itself can stand far above the layer)
-function pocket(path, region, r, fd, zTop, zBottom, allowance, lift = null) {
+// entry(x, y): how low a rapid may come down there (default: zTop, all
+// cleared above it); below that the tool feeds down.
+function pocket(path, region, r, fd, zTop, zBottom, allowance, lift = null, entry = null) {
   const step = Math.min(fd.stepover, r * 0.95);
   // Stock left for a finishing pass hides coarser corners
   const levels = rings(region, r + allowance, step, allowance >= 0.2 ? 0.05 : undefined);
@@ -184,7 +189,7 @@ function pocket(path, region, r, fd, zTop, zBottom, allowance, lift = null) {
     for (const chain of cs) {
       let loop = new Loop(chain[0]);
       let [sx, sy] = loop.at(0);
-      path.goTo(sx, sy, zFrom);
+      path.goTo(sx, sy, Math.max(zFrom, entry ? entry(sx, sy) : zFrom));
       path.feed(sx, sy, zFrom, fd.plunge);
       let end = rampAndLap(path, loop, 0, zFrom, z, fd);
       for (let i = 1; i < chain.length; i++) {
@@ -197,7 +202,8 @@ function pocket(path, region, r, fd, zTop, zBottom, allowance, lift = null) {
           const up = lift ?? zFrom + 1;
           path.rapid(from[0], from[1], up);
           path.rapid(sx, sy, up);
-          if (up > zFrom + 1) path.rapid(sx, sy, zFrom + 1);
+          const safe = Math.max(zFrom, entry ? entry(sx, sy) : zFrom) + 1;
+          if (up > safe) path.rapid(sx, sy, safe);
           path.feed(sx, sy, z, fd.plunge);
         }
         walk(path, next, s, s + next.length, () => z, fd.feed);
@@ -223,6 +229,37 @@ function finishWalls(path, region, r, fd, zTop, zBottom, maxDepth) {
       walk(path, loop, 0, loop.length, () => z, fd.feed * 0.9);
     }
     path.retract();
+  }
+}
+
+// 3D roughing leaves its allowance for the ball, which can't finish the
+// foot of a vertical wall. Where a layer's wall stands right under the one
+// above (within 0.05 mm: vertical), one lap to the wall finishes it. It
+// touches only the layer's outline, which holds everything above it.
+// Starts come down no lower than entry(x, y) allows.
+function verticalWalls(path, region, above, r, fd, zFrom, z, entry) {
+  const lo = above ? C.offset(above, -(r - 0.05)) : null, hi = above ? C.offset(above, -(r + 0.05)) : null;
+  const vertical = (q) => !above || (inside(q, lo) && !inside(q, hi));
+  for (const pts of C.simplify(C.cleanLoops(C.offset(region, -r), 0.001), 0.005)) {
+    const loop = new Loop(pts);
+    const n = Math.max(8, Math.ceil(loop.length / 0.5));
+    const flag = Array.from({ length: n }, (_, i) => vertical(loop.at((i / n) * loop.length)));
+    if (!flag.some(Boolean)) continue;
+    const all = flag.every(Boolean);
+    const first = all ? 0 : flag.indexOf(false);
+    for (let k = 0; k < n; k++) {
+      const i = (first + k) % n;
+      if (!flag[i] || (!all && flag[(i - 1 + n) % n])) continue;
+      let j = i;
+      while (j - i < n - 1 && flag[(j + 1) % n]) j++;
+      const s0 = (i / n) * loop.length, s1 = all ? s0 + loop.length : ((j + 1) / n) * loop.length;
+      const [x, y] = loop.at(s0);
+      path.goTo(x, y, Math.max(zFrom, entry(x, y)));
+      path.feed(x, y, z, fd.plunge);
+      walk(path, loop, s0, s1, () => z, fd.feed * 0.9);
+      path.retract();
+      if (all) break;
+    }
   }
 }
 
@@ -345,33 +382,24 @@ function cutout(path, footprint, r, fd, zTop, zBottom, job, allowance) {
   }
 }
 
-// 3D finishing: back-and-forth passes along X over the part's top (g, a
-// height grid). At each grid node the tool goes as low as it can without
-// touching the part anywhere under it (a drop cutter on the grid), never
-// below zFloor. Passes are spaced for ridges `ridge` high.
-function surface3d(path, g, tool, fd, ridge, zFloor, above) {
-  const r = tool.diameter / 2, c = g.cell;
-  const ball = tool.kind === 'ball';
-  // Any point is within half a cell's diagonal of a node, so each node
-  // counts as that much nearer: on a steep wall the surface between two
-  // nodes can stand far above both, and the tool's edge must still see it.
+// The part's top as a 3D tool sees it (g: a height grid). A node counts as
+// half a cell's diagonal nearer than it is: any point of the surface is that
+// close to some node, and on a steep wall the surface between two nodes can
+// stand far above both; the tool's edge must still see it.
+function toolOnSurface(g, tool, zFloor) {
+  const r = tool.diameter / 2, c = g.cell, ball = tool.kind === 'ball';
   const near = c * Math.SQRT1_2, n = Math.ceil((r + near) / c);
+  const tip = (d) => (ball ? r - Math.sqrt(Math.max(0, r * r - d * d)) : 0); // tip to tool end at d out
   const st = [];
   for (let j = -n; j <= n; j++) for (let i = -n; i <= n; i++) {
     const d = Math.max(0, Math.hypot(i, j) * c - near);
-    if (d <= r + 1e-9) st.push(i, j, ball ? r - Math.sqrt(Math.max(0, r * r - d * d)) : 0);
+    if (d <= r + 1e-9) st.push(i, j, tip(d));
   }
-  const { nx, ny, h } = g;
-  // The highest surface anywhere under the tool: rapids stop above it
-  const under = (i, j) => {
-    let z = zFloor;
-    for (let s = 0; s < st.length; s += 3) {
-      const ii = i + st[s], jj = j + st[s + 1];
-      if (ii >= 0 && jj >= 0 && ii < nx && jj < ny && h[jj * nx + ii] > z) z = h[jj * nx + ii];
-    }
-    return z;
-  };
-  const drop = (i, j) => {
+  const { nx, ny, h, x0, y0 } = g;
+  const S = { r, c, n, zFloor, x: (i) => x0 + i * c, y: (j) => y0 + j * c };
+  // Lowest the tip can go with the tool's axis on node i, j (null: no part
+  // within reach), never below zFloor
+  S.drop = (i, j) => {
     let z = -Infinity;
     for (let s = 0; s < st.length; s += 3) {
       const ii = i + st[s], jj = j + st[s + 1];
@@ -381,69 +409,186 @@ function surface3d(path, g, tool, fd, ridge, zFloor, above) {
     }
     return z === -Infinity ? null : Math.max(z, zFloor);
   };
-  // Where the part is, plus the tool's reach
+  // The same anywhere, not only on a node
+  S.dropAt = (x, y) => {
+    const fi = (x - x0) / c, fj = (y - y0) / c, m = (r + near) / c;
+    let z = -Infinity;
+    for (let jj = Math.max(0, Math.ceil(fj - m)); jj <= Math.min(ny - 1, Math.floor(fj + m)); jj++) {
+      for (let ii = Math.max(0, Math.ceil(fi - m)); ii <= Math.min(nx - 1, Math.floor(fi + m)); ii++) {
+        const d = Math.max(0, Math.hypot(ii - fi, jj - fj) * c - near);
+        if (d > r) continue;
+        const v = h[jj * nx + ii] - tip(d);
+        if (v > z) z = v;
+      }
+    }
+    return z === -Infinity ? null : Math.max(z, zFloor);
+  };
+  // The highest surface anywhere under the tool: rapids stop above it
+  S.underAt = (x, y) => {
+    const fi = (x - x0) / c, fj = (y - y0) / c, m = (r + near) / c;
+    let z = zFloor;
+    for (let jj = Math.max(0, Math.ceil(fj - m)); jj <= Math.min(ny - 1, Math.floor(fj + m)); jj++) {
+      for (let ii = Math.max(0, Math.ceil(fi - m)); ii <= Math.min(nx - 1, Math.floor(fi + m)); ii++) if (h[jj * nx + ii] > z) z = h[jj * nx + ii];
+    }
+    return z;
+  };
+  // Nodes where the part is, plus the tool's reach
   let i0 = Infinity, i1 = -1, j0 = Infinity, j1 = -1;
   for (let j = 0; j < ny; j++) for (let i = 0; i < nx; i++) {
     if (h[j * nx + i] === -Infinity) continue;
     if (i < i0) i0 = i; if (i > i1) i1 = i; if (j < j0) j0 = j; if (j > j1) j1 = j;
   }
-  if (i1 < 0) return;
-  i0 = Math.max(0, i0 - n); i1 = Math.min(nx - 1, i1 + n); j0 = Math.max(0, j0 - n); j1 = Math.min(ny - 1, j1 + n);
-  const over = ball ? 2 * Math.sqrt(Math.max(0, 2 * r * ridge - ridge * ridge)) : fd.stepover * 0.5;
+  S.box = i1 < 0 ? null : { i0: Math.max(0, i0 - n), i1: Math.min(nx - 1, i1 + n), j0: Math.max(0, j0 - n), j1: Math.min(ny - 1, j1 + n) };
+  return S;
+}
+
+// Cuts along a line of points, getting onto it from where the tool is: a
+// short hop goes straight (over whatever stands in the way), a long one up
+// to the clearance plane and down to where stairs left by the roughing may be.
+function followLine(path, S, line, fd, reach, above) {
+  const first = line[0], last = path.at;
+  if (last && !last.r && Math.hypot(first.x - last.x, first.y - last.y) <= reach) {
+    const m = Math.max(1, Math.ceil(Math.hypot(first.x - last.x, first.y - last.y) / (S.c / 2)));
+    let top = Math.max(last.z, first.z);
+    for (let k = 1; k < m; k++) {
+      const t = k / m, z = S.dropAt(last.x + (first.x - last.x) * t, last.y + (first.y - last.y) * t) ?? S.zFloor;
+      if (z > last.z + (first.z - last.z) * t + 1e-3) top = Math.max(top, z);
+    }
+    if (top > Math.max(last.z, first.z) + 1e-6) {
+      path.feed(last.x, last.y, top + 0.5, fd.feed);
+      path.feed(first.x, first.y, top + 0.5, fd.feed);
+    }
+    path.feed(first.x, first.y, first.z, fd.plunge);
+  } else {
+    path.goTo(first.x, first.y, S.underAt(first.x, first.y) + above);
+    path.feed(first.x, first.y, first.z, fd.plunge);
+  }
+  let prev = first;
+  for (const q of line.slice(1)) {
+    // Steeper than 45° down: plunge rate
+    path.feed(q.x, q.y, q.z, prev.z - q.z > Math.hypot(q.x - prev.x, q.y - prev.y) ? fd.plunge : fd.feed);
+    prev = q;
+  }
+}
+
+// 3D finishing: back-and-forth passes along X over the whole surface, then
+// (steep: true) waterlines on the walls steeper than STEEP, where passes
+// along X step down the wall in big steps. Both are spaced for ridges
+// `ridge` high.
+const STEEP = Math.tan((50 * Math.PI) / 180);
+function surface3d(path, g, tool, fd, ridge, zFloor, above, steep = true) {
+  const S = toolOnSurface(g, tool, zFloor);
+  if (!S.box) return;
+  const { r, c } = S, { i0, i1, j0, j1 } = S.box;
+  const over = tool.kind === 'ball' ? 2 * Math.sqrt(Math.max(0, 2 * r * ridge - ridge * ridge)) : fd.stepover * 0.5;
   const every = Math.max(1, Math.floor(Math.min(over, r) / c + 1e-9));
+  const reach = 3 * every * c + 1e-6;
   const rows = [];
   for (let j = j0; j <= j1; j += every) rows.push(j);
   if (rows[rows.length - 1] !== j1) rows.push(j1);
-  const at = (i, j, z) => ({ x: g.x0 + i * c, y: g.y0 + j * c, z, i, j });
-  // A straight move is safe when no node along it needs the tool higher
-  const clear = (a, b) => {
-    const m = Math.max(1, Math.ceil(Math.hypot(b.i - a.i, b.j - a.j) * 2));
-    let top = Math.max(a.z, b.z);
-    for (let k = 1; k < m; k++) {
-      const t = k / m, z = drop(Math.round(a.i + (b.i - a.i) * t), Math.round(a.j + (b.j - a.j) * t)) ?? zFloor;
-      if (z > a.z + (b.z - a.z) * t + 1e-3) top = Math.max(top, z);
-    }
-    return top;
-  };
-  let last = null;
-  const reach = 3 * every * c + 1e-6;
   rows.forEach((j, k) => {
     // Runs of nodes the tool reaches, simplified, every other row backwards
     const runs = [];
     let run = [];
     for (let i = i0; i <= i1; i++) {
-      const z = drop(i, j);
+      const z = S.drop(i, j);
       if (z === null) { if (run.length) runs.push(run); run = []; continue; }
-      run.push(at(i, j, z));
+      run.push({ x: S.x(i), y: S.y(j), z });
     }
     if (run.length) runs.push(run);
     if (k % 2) { runs.reverse(); runs.forEach((x) => x.reverse()); }
-    for (const pts of runs) {
-      const line = simplifyZ(pts, 0.005);
-      const first = line[0];
-      if (last && Math.hypot(first.x - last.x, first.y - last.y) <= reach) {
-        const top = clear(last, first);
-        if (top > Math.max(last.z, first.z) + 1e-6) {
-          // Over what's in the way, then down onto the next pass
-          path.feed(last.x, last.y, top + 0.5, fd.feed);
-          path.feed(first.x, first.y, top + 0.5, fd.feed);
-        }
-        path.feed(first.x, first.y, first.z, fd.plunge);
-      } else {
-        // Far: up, across, and down to where stairs from the roughing may be
-        path.goTo(first.x, first.y, under(first.i, first.j) + above);
-        path.feed(first.x, first.y, first.z, fd.plunge);
-      }
-      let prev = first;
-      for (const q of line.slice(1)) {
-        // Steeper than 45° down: plunge rate
-        path.feed(q.x, q.y, q.z, prev.z - q.z > Math.hypot(q.x - prev.x, q.y - prev.y) ? fd.plunge : fd.feed);
-        prev = q;
-      }
-      last = prev;
-    }
+    for (const pts of runs) followLine(path, S, simplifyZ(pts, 0.005), fd, reach, above);
   });
+  if (steep) waterlines(path, S, fd, Math.min(over, r), reach, above);
   path.retract();
+}
+
+// Contours of the drop field (how low the tip can go) at heights `dz`
+// apart, where it's steep: the tool runs level around the wall. Contour
+// points lie between nodes, so each is checked again (dropAt) and lifted
+// if the surface there needs it.
+function waterlines(path, S, fd, dz, reach, above) {
+  const k = 2; // field on every other node: plenty for where to look
+  const { i0, i1, j0, j1 } = S.box;
+  const W = Math.floor((i1 - i0) / k) + 1, H = Math.floor((j1 - j0) / k) + 1;
+  const D = new Float32Array(W * H);
+  let zMax = -Infinity;
+  for (let b = 0; b < H; b++) for (let a = 0; a < W; a++) {
+    const z = S.drop(i0 + a * k, j0 + b * k);
+    D[b * W + a] = z === null ? NaN : z;
+    if (z !== null && z > zMax) zMax = z;
+  }
+  const step = k * S.c, slope = STEEP * step;
+  const X = (a) => S.x(i0 + a * k), Y = (b) => S.y(j0 + b * k);
+  // A cell is steep when any of its sides rises faster than STEEP
+  const steepCell = new Uint8Array(W * H);
+  for (let b = 0; b + 1 < H; b++) for (let a = 0; a + 1 < W; a++) {
+    const p = D[b * W + a], q = D[b * W + a + 1], u = D[(b + 1) * W + a], v = D[(b + 1) * W + a + 1];
+    if ([p, q, u, v].some(Number.isNaN)) continue;
+    if (Math.abs(p - q) > slope || Math.abs(u - v) > slope || Math.abs(p - u) > slope || Math.abs(q - v) > slope) steepCell[b * W + a] = 1;
+  }
+  for (let z = zMax - dz / 2; z > S.zFloor + 0.05; z -= dz) {
+    // Marching squares: a segment across each steep cell the level crosses,
+    // its ends named by the cell side they lie on
+    const ends = new Map(), segs = [];
+    const edge = (a, b, horiz) => {
+      const key = horiz ? `h${a},${b}` : `v${a},${b}`;
+      if (!ends.has(key)) {
+        const p = D[b * W + a], q = horiz ? D[b * W + a + 1] : D[(b + 1) * W + a];
+        const t = (z - p) / (q - p);
+        ends.set(key, { key, x: horiz ? X(a) + t * step : X(a), y: horiz ? Y(b) : Y(b) + t * step, segs: [] });
+      }
+      return ends.get(key);
+    };
+    for (let b = 0; b + 1 < H; b++) for (let a = 0; a + 1 < W; a++) {
+      if (!steepCell[b * W + a]) continue;
+      const p = D[b * W + a] > z, q = D[b * W + a + 1] > z, u = D[(b + 1) * W + a] > z, v = D[(b + 1) * W + a + 1] > z;
+      const sides = [];
+      if (p !== q) sides.push(edge(a, b, true));
+      if (q !== v) sides.push(edge(a + 1, b, false));
+      if (u !== v) sides.push(edge(a, b + 1, true));
+      if (p !== u) sides.push(edge(a, b, false));
+      // Two sides crossed: one segment; four (a saddle): pair them in order
+      for (let s = 0; s + 1 < sides.length; s += 2) {
+        const seg = [sides[s], sides[s + 1]];
+        segs.push(seg); seg[0].segs.push(seg); seg[1].segs.push(seg);
+      }
+    }
+    // Segments joined end to end into lines
+    const used = new Set(), lines = [];
+    for (const seg of segs) {
+      if (used.has(seg)) continue;
+      used.add(seg);
+      const line = [seg[0], seg[1]];
+      for (const back of [false, true]) {
+        for (;;) {
+          const tail = back ? line[0] : line[line.length - 1];
+          const next = tail.segs.find((s) => !used.has(s));
+          if (!next) break;
+          used.add(next);
+          const o = next[0] === tail ? next[1] : next[0];
+          if (back) line.unshift(o); else line.push(o);
+        }
+      }
+      if (line.length >= 3) lines.push(line);
+    }
+    // Nearest line first; each point no lower than the surface allows
+    let at = path.at;
+    while (lines.length) {
+      let best = 0, bd = Infinity, flip = false;
+      lines.forEach((l, i) => {
+        for (const [e, f] of [[l[0], false], [l[l.length - 1], true]]) {
+          const d = at ? Math.hypot(e.x - at.x, e.y - at.y) : 0;
+          if (d < bd) { bd = d; best = i; flip = f; }
+        }
+      });
+      const [l] = lines.splice(best, 1);
+      if (flip) l.reverse();
+      const pts = l.map((e) => ({ x: e.x, y: e.y, z: Math.max(z, S.dropAt(e.x, e.y) ?? z) }));
+      followLine(path, S, simplifyZ(pts, 0.005), fd, reach, above);
+      at = path.at;
+    }
+  }
 }
 
 // Drops points that lie within tol of the line through their neighbours
@@ -485,8 +630,29 @@ function nearestFirst(areas, from) {
   return out;
 }
 
+// How low a rapid may come down at x, y onto a layer starting at zFrom:
+// material goes from the top down, so it is clear down to the last of an
+// unbroken run of layers from the top that each swept the whole tool there.
+function clearedDown(swept, zFrom, r, x, y, zTop) {
+  const levels = [...new Set(swept.map((s) => s.z))].sort((a, b) => b - a);
+  let top = zTop;
+  for (const z of levels) {
+    if (z < zFrom - 1e-6) break;
+    const covers = swept.some((s) => {
+      if (Math.abs(s.z - z) > 1e-6) return false;
+      s.inner ||= new Map();
+      if (!s.inner.has(r)) s.inner.set(r, C.offset(s.area, -r - ENTRY_MARGIN));
+      return inside([x, y], s.inner.get(r));
+    });
+    if (!covers) break;
+    top = z;
+  }
+  return Math.max(top, zFrom);
+}
+
 export function toolpaths(p) {
   const clearZ = p.stock.top + CLEAR;
+  const swept = []; // 3D layers cut so far: { zFrom, z, area }
   const allowance = (FINISHES[p.job.finish] || FINISHES.balanced).allowance;
   // Without the facing pass the top is still at the stock's height
   const faced = p.ops.some((o) => o.kind === 'face' && o.enabled);
@@ -510,16 +676,24 @@ export function toolpaths(p) {
         corners(path, op.region, r, big ? big.tool.diameter / 2 : r * 2, fd, zTop, op.zBottom);
         break;
       }
-      case 'rough3d':
-        // Each layer from the one above it; the first from the top surface
-        for (const layer of op.layers) {
+      case 'rough3d': case 'rest3d': {
+        // Each layer from the one above it; the first from the top surface.
+        // rest3d: narrow places, to the wall (nothing is left for the ball)
+        const allow = op.kind === 'rough3d' ? op.allowance : 0;
+        const entry = (k) => (x, y) => clearedDown(swept, op.layers[k].zFrom, r, x, y, zTop);
+        op.layers.forEach((layer, k) => {
           const from = layer.zFrom >= p.analysis.top - 1e-6 ? zTop : layer.zFrom;
-          for (const area of nearestFirst(C.regions(layer.region), path.at)) pocket(path, area, r, fd, from, layer.z, op.allowance, zTop + 1);
+          for (const area of nearestFirst(C.regions(layer.region), path.at)) pocket(path, area, r, fd, from, layer.z, allow, zTop + 1, entry(k));
           // Opened only at this height: nothing above was cut, so from the top
-          for (const area of nearestFirst(C.regions(layer.fresh || []), path.at)) pocket(path, area, r, fd, zTop, layer.z, op.allowance, zTop + 1);
-        }
+          for (const area of nearestFirst(C.regions(layer.fresh || []), path.at)) pocket(path, area, r, fd, zTop, layer.z, allow, zTop + 1);
+          if (allow > 0) verticalWalls(path, layer.region, k ? op.layers[k - 1].region : null, r, fd, from, layer.z, entry(k));
+          // What this layer swept: the tool's reach inside the region
+          const cut = C.offset(C.offset([...layer.region, ...(layer.fresh || [])], -(r + allow)), r);
+          if (cut.length) swept.push({ zFrom: from, z: layer.z, area: cut });
+        });
         break;
-      case 'finish3d': surface3d(path, op.surface, op.tool, fd, op.ridge, 0, LAYER_LEFT); break;
+      }
+      case 'finish3d': surface3d(path, op.surface, op.tool, fd, op.ridge, 0, LAYER_LEFT, op.steep !== false); break;
       case 'drill': drill(path, op.centers, fd, zTop, op.zBottom, op.tool.diameter); break;
       case 'cutout': cutout(path, op.region, r, fd, zTop, op.zBottom, p.job, allowance); break;
     }
