@@ -65,6 +65,7 @@ export function mountApp(root, host, engine) {
     limits: {}, travel: null,
     job: null, plan: null, planning: false, result: null, simChecks: null,
     toast: '',
+    recent: [],
   };
   const viewer = new Viewer();
   // A slot past the magazine is still a change by hand
@@ -98,8 +99,8 @@ export function mountApp(root, host, engine) {
     if (val('130') && val('131')) S.travel = { x: val('130'), y: val('131'), z: val('132') };
     S.connected = !!state?.machineState?.connected;
     render();
-    const last = await store.load('last');
-    if (last?.bytes && !S.part && !S.loading) openFile(null, last);
+    S.recent = await store.recent();
+    if (S.recent.length && !S.part && !S.loading) openRecent(S.recent[0].key);
   })();
 
   // ---------- engine calls ----------
@@ -112,6 +113,11 @@ export function mountApp(root, host, engine) {
     render();
     try {
       const bytes = last ? last.bytes : await file.arrayBuffer();
+      // The same file opened again: its settings from last time
+      if (!last && S.recent.some((r) => r.key === store.partKey(name, bytes))) {
+        const kept = await store.load(`part:${store.partKey(name, bytes)}`);
+        if (kept?.bytes && sameBytes(kept.bytes, bytes)) last = { ...kept, bytes };
+      }
       S.bytes = bytes.slice(0);
       S.lock = last?.lock ?? true;
       const info = await engine('load', { bytes, name, scale: last?.scale }, [bytes]);
@@ -261,12 +267,42 @@ export function mountApp(root, host, engine) {
     if (ms >= SLOW.tip && smallHere()) root.querySelectorAll('[data-slowtip]').forEach((e) => { e.hidden = false; });
   }, 500);
 
-  // The part and its settings for next time
+  // The part and its settings for next time, first in the recent parts
   let saveTimer = null;
   function remember() {
     if (!S.bytes || !S.job) return;
     clearTimeout(saveTimer);
-    saveTimer = setTimeout(() => store.save('last', { name: S.fileName, bytes: S.bytes, upPath: S.upPath, job: S.job, scale: S.scale, lock: S.lock, savedAt: Date.now() }), 400);
+    const record = { name: S.fileName, bytes: S.bytes, upPath: S.upPath, job: S.job, scale: S.scale, lock: S.lock, savedAt: Date.now() };
+    const first = S.recent[0]?.key !== store.partKey(record.name, record.bytes);
+    saveTimer = setTimeout(async () => {
+      S.recent = await store.keep(record, S.recent);
+      if (first) render();
+    }, 400);
+  }
+  async function openRecent(key) {
+    const kept = await store.load(`part:${key}`);
+    if (kept?.bytes) return openFile(null, kept);
+    S.recent = await store.forget(key, S.recent);
+    S.error = 'That part is no longer kept in this browser.';
+    render();
+  }
+  function sameBytes(a, b) {
+    if (a.byteLength !== b.byteLength) return false;
+    const x = new Uint8Array(a), y = new Uint8Array(b);
+    for (let i = 0; i < x.length; i++) if (x[i] !== y[i]) return false;
+    return true;
+  }
+  // Recent parts other than the one open
+  function recentList() {
+    const open = S.bytes ? store.partKey(S.fileName, S.bytes) : null;
+    return S.recent.filter((r) => r.key !== open);
+  }
+  function when(ms) {
+    const d = (Date.now() - ms) / 86400000;
+    if (d < 1) return 'today';
+    if (d < 2) return 'yesterday';
+    if (d < 30) return `${Math.floor(d)} days ago`;
+    return new Date(ms).toLocaleDateString();
   }
 
   // ---------- rendering ----------
@@ -337,6 +373,8 @@ export function mountApp(root, host, engine) {
         <p>Export your part from Fusion, Onshape, FreeCAD or SolidWorks as <strong>.step</strong>, or open a mesh: <strong>.stl</strong> or <strong>.3mf</strong> (from a 3D printing site or slicer). Millimetres or inches both work.</p>
         <label class="ncc-btn" style="display: inline-flex; align-items: center; gap: 8px">Open file<input type="file" accept=".step,.stp,.stl,.3mf,.STEP,.STP,.STL,.3MF" data-file hidden></label>
         ${S.error ? `<div class="ncc-hint bad" style="max-width: 520px">${ICONS.warn}<span>${esc(S.error)}</span></div>` : ''}
+        ${recentList().length ? `<div class="ncc-recent"><div class="ncc-recent-h">Recent parts <span>kept in this browser</span></div>
+          ${recentList().map((r) => `<div class="ncc-recent-row"><button class="ncc-recent-open" type="button" data-recent-open="${esc(r.key)}"><span class="ncc-file-name">${esc(r.name)}</span><span class="ncc-file-sub">${when(r.savedAt)}</span></button><button class="ncc-recent-x" type="button" data-forget="${esc(r.key)}" aria-label="Forget ${esc(r.name)}" title="Forget">${ICONS.close}</button></div>`).join('')}</div>` : ''}
         ${S.tools.length ? '' : `<div class="ncc-hint" style="max-width: 520px">${ICONS.info}<span>Your Tool Library is empty. Add your end mills in Settings → Tool Library so ncCAM can pick them.</span></div>`}
       </div>`;
     }
@@ -349,7 +387,10 @@ export function mountApp(root, host, engine) {
             <div style="min-width: 0"><div class="ncc-file-name">${esc(S.fileName)}</div>
             <div class="ncc-file-sub ncc-mono">${a ? `${n(a.size[0])} × ${n(a.size[1])} × ${L(a.size[2])}` : '&nbsp;'}</div></div>
           </div>
+          <div style="display: flex; gap: 8px; align-items: center">
+          ${recentList().length ? `<select class="ncc-select ncc-recent-pick" data-recent aria-label="Recent parts"><option value="">Recent parts…</option>${recentList().map((r) => `<option value="${esc(r.key)}">${esc(r.name)} · ${when(r.savedAt)}</option>`).join('')}</select>` : ''}
           <label class="ncc-btn muted" style="white-space: nowrap">Open another file<input type="file" accept=".step,.stp,.stl,.3mf,.STEP,.STP,.STL,.3MF" data-file hidden></label>
+          </div>
         </div>
         <div data-viewer></div>
       </div>
@@ -969,6 +1010,8 @@ export function mountApp(root, host, engine) {
     if (d.act === 'paths') { S.showPaths = !S.showPaths; syncOverlays(); t.classList.toggle('on', S.showPaths); return; }
     if (d.act === 'ghost') { S.showPart = !S.showPart; syncOverlays(); t.classList.toggle('on', S.showPart); return; }
     if (d.act === 'close') return close();
+    if (d.recentOpen) return openRecent(d.recentOpen);
+    if (d.forget) return store.forget(d.forget, S.recent).then((l) => { S.recent = l; render(); });
     if (d.act === 'load') return loadProgram(t);
     if (d.act === 'save') return saveProgram(t);
   });
@@ -997,6 +1040,7 @@ export function mountApp(root, host, engine) {
   root.addEventListener('change', (e) => {
     const t = e.target;
     if (t.matches('[data-file]')) return openFile(t.files[0]);
+    if (t.matches('[data-recent]')) return t.value && openRecent(t.value);
     if (t.dataset.tool) { S.job.toolOverride[t.dataset.tool] = +t.value || t.value; return changed(); }
     if (t.dataset.size) {
       const k = +t.dataset.size, v = parseFloat(String(t.value).replace(',', '.'));
