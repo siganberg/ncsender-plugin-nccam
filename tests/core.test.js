@@ -913,3 +913,27 @@ test('a drill a little smaller than a hole drills it: a pilot before an end mill
   const { p: r } = await make('bracket.step', (j) => j, N.normalizeTools([...only.filter((t) => t.id !== 20), { ...drill98, id: 22, diameter: 9.3 }]));
   assert.ok(!r.ops.some((o) => o.kind === 'drill'));
 });
+
+test('a hole too tight to spiral: a pilot drill, then an end mill no wider than it rounds it to size', async () => {
+  // bracket.step's Ø10 holes, a 9.8 mm drill and a 9.8 mm end mill (too big to spiral down)
+  const lib = N.normalizeTools([
+    { id: 20, toolId: 20, name: '9.8 mm drill', type: 'drill', diameter: 9.8, dimensions: { flute_length: 30 } },
+    { id: 21, toolId: 21, name: '9.8 mm end mill', type: 'flat', diameter: 9.8, dimensions: { flute_length: 30 } },
+    { id: 22, toolId: 22, name: '1/2" end mill', type: 'flat', diameter: 12.7, dimensions: { flute_length: 30 } },
+  ]);
+  const { mesh, p } = await make('bracket.step', (j) => j, lib);
+  const pilot = p.ops.find((o) => o.kind === 'drill' && o.pilot);
+  const bore = p.ops.find((o) => o.kind === 'hole' && o.bore);
+  assert.ok(pilot && bore && bore.after === pilot.id && bore.tool.name === '9.8 mm end mill');
+  assert.ok(p.ops.indexOf(pilot) < p.ops.indexOf(bore));
+  assert.equal(N.simulate(p, 0.1).collisions.length, 0);
+  // The hole comes out Ø10: cut to the bottom out to 5 mm from its middle, not past
+  const { hm } = N.simulate(p, 0.05);
+  const c = bore.centers[0];
+  let rmax = 0;
+  for (let i = 0; i < hm.h.length; i++) {
+    const x = hm.x0 + (i % hm.nx) * hm.cell, y = hm.y0 + Math.floor(i / hm.nx) * hm.cell, r = Math.hypot(x - c.x, y - c.y);
+    if (r < 7 && hm.h[i] < 1) rmax = Math.max(rmax, r);
+  }
+  assert.ok(rmax > 4.9 && rmax < 5.08, `cut out to r ${rmax}`);
+});

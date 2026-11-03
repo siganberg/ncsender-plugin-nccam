@@ -356,6 +356,33 @@ function face(path, stock, r, fd, zTop, zBottom) {
   path.retract();
 }
 
+// A hole an end mill only a little smaller than it rounds to size, after a
+// pilot drill took the middle: down into the pilot, then a helix out at the
+// hole's edge (climb: counter-clockwise), a step-down a turn, a last full
+// turn at the bottom, back to the middle and up.
+function bore(path, centers, r, fd, zTop, zBottom) {
+  const left = centers.slice();
+  while (left.length) {
+    // The nearest hole next
+    const at = path.at || left[0];
+    let best = 0;
+    left.forEach((q, i) => { if (Math.hypot(q.x - at.x, q.y - at.y) < Math.hypot(left[best].x - at.x, left[best].y - at.y)) best = i; });
+    const [c] = left.splice(best, 1);
+    const R = Math.max(0, c.d / 2 - r);
+    const turns = Math.max(1, Math.ceil((zTop - zBottom) / fd.stepdown - 1e-6));
+    const seg = Math.max(12, Math.ceil((2 * Math.PI * R) / 0.05));
+    path.goTo(c.x, c.y, zTop);
+    path.feed(c.x, c.y, zTop, fd.plunge);
+    path.feed(c.x + R, c.y, zTop, fd.feed);
+    for (let k = 1; k <= (turns + 1) * seg; k++) {
+      const a = (2 * Math.PI * k) / seg, z = Math.max(zBottom, zTop - ((zTop - zBottom) * k) / (turns * seg));
+      path.feed(c.x + R * Math.cos(a), c.y + R * Math.sin(a), z, fd.feed);
+    }
+    path.feed(c.x, c.y, zBottom, fd.feed);
+    path.retract();
+  }
+}
+
 function drill(path, centers, fd, zTop, zBottom, d) {
   const peck = Math.max(0.5, d * 1.5);
   for (const c of centers) {
@@ -795,7 +822,11 @@ export function toolpaths(p) {
     const maxFinish = Math.min(op.tool.fluteLength || Infinity, 3 * op.tool.diameter);
     switch (op.kind) {
       case 'face': face(path, p.stock, r, fd, zTop, op.zBottom); break;
-      case 'pocket': case 'step': case 'hole':
+      case 'hole':
+        // A pilot drilled the middle: round the hole to size from it
+        if (op.bore) { bore(path, op.centers, r, fd, zTop, op.zBottom); break; }
+      // falls through
+      case 'pocket': case 'step':
         // Each separate area (each hole) to full depth before the next
         for (const area of nearestFirst(C.regions(op.region), path.at)) {
           pocket(path, area, r, fd, zTop, op.zBottom, allowance);

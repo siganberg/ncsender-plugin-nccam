@@ -359,6 +359,15 @@ export function plan(mesh, tools, job, limits = {}) {
     const region = h.regions.flat().length ? h.regions.flatMap((r) => r) : [];
     let tool = roughTool(region, depth, 0) || null;
     if (!tool || tool.diameter > h.d - 0.4) tool = flats.find((t) => t.diameter <= h.d - 0.4 && fluteOk(t, depth)) || null;
+    // With a pilot the end mill needs no room to spiral down: any a little
+    // smaller than the hole (and no wider than the pilot, so it drops in)
+    // rounds it to size
+    const borer = !tool && near ? flats.find((t) => t.diameter < h.d - 0.02 && t.diameter <= near.diameter + 0.05 && fluteOk(t, depth)) : null;
+    if (borer) {
+      const pilot = drillOp(near, n > 1 ? `Drill ${n} pilot holes` : 'Drill a pilot hole', `${what} · then ${L(h.d)} with an end mill`, { pilot: true });
+      add({ kind: 'hole', label: n > 1 ? `Cut ${n} holes to size` : 'Cut the hole to size', tool: take(borer), zTop: h.zTop, zBottom: h.zBottom, region, centers: h.centers, bore: true, after: pilot.id, detail: `${what} · from the pilot` });
+      continue;
+    }
     if (!tool) {
       if (!near) { warnings.push({ kind: 'notool', text: `No drill or end mill fits the ${what} hole${n > 1 ? 's' : ''}.` }); continue; }
       const under = L(h.d - near.diameter, job.units === 'in' ? 4 : 2);
