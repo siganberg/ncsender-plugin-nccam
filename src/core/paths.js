@@ -278,7 +278,7 @@ function chamfer(path, levels, fd) {
     for (const pts of nearestFirst(lv.loops.map((l) => [l]), path.at).map((g) => g[0])) {
       const loop = new Loop(pts.slice().reverse()); // climb, as the cut-out
       const n = Math.max(8, Math.ceil(loop.length / 0.25));
-      const flag = Array.from({ length: n }, (_, i) => !inside(loop.at((i / n) * loop.length), lv.bad));
+      const flag = Array.from({ length: n }, (_, i) => { const q = loop.at((i / n) * loop.length); return !inside(q, lv.bad) && (!lv.keep || inside(q, lv.keep)); });
       if (!flag.some(Boolean)) continue;
       const all = flag.every(Boolean), first = all ? 0 : flag.indexOf(false);
       for (let k = 0; k < n; k++) {

@@ -1050,3 +1050,12 @@ test('a bore is off when its pilot is', async () => {
   const p = N.plan(mesh, lib, { ...job, disabled: { [pilot.id]: true } });
   assert.equal(p.ops.find((o) => o.bore).enabled, false);
 });
+
+test('the dialog page is whole: no merge leftovers, one build stamp', async () => {
+  const { readFileSync } = await import('node:fs');
+  const html = readFileSync(new URL('../config.html', import.meta.url), 'utf8');
+  assert.ok(!/^(<<<<<<<|=======|>>>>>>>)/m.test(html), 'conflict markers in config.html');
+  assert.equal((html.match(/var BUILD = '/g) || []).length, 1);
+  const lib = readFileSync(new URL('../lib/nccam.js', import.meta.url), 'utf8');
+  assert.ok(!/^(<<<<<<<|>>>>>>>)/m.test(lib), 'conflict markers in lib/nccam.js');
+});

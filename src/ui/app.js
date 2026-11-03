@@ -211,6 +211,7 @@ export function mountApp(root, host, engine) {
     S.planning = true;
     if (paths) S.result = null;
     render();
+    const started = performance.now();
     try {
       const r = await engine('plan', {
         tools: S.tools, job: { ...S.job, units: S.units }, limits: S.limits, paths,
@@ -218,6 +219,8 @@ export function mountApp(root, host, engine) {
         timing: { maxRapid: S.maxRapid || 5000 },
       });
       if (seq !== planSeq) return;
+      // How long this took here: a small computer gets a note when it's slow
+      S.slow = slowNote(performance.now() - started, paths) ?? (paths ? null : S.slow);
       S.plan = r.plan;
       remember();
       if (paths) { S.result = r; S.simChecks = null; }
@@ -225,6 +228,17 @@ export function mountApp(root, host, engine) {
       if (seq === planSeq) S.error = e.message || String(e);
     }
     if (seq === planSeq) { S.planning = false; render(); }
+  }
+
+  // ncCAM works in the browser that shows it. On a small computer (a
+  // Raspberry Pi running ncSender) planning can take a while; ncSender's
+  // own page opened from a laptop's browser plans there instead.
+  const SLOW = { plan: 6000, paths: 15000 };
+  function slowNote(ms, paths) {
+    const small = /aarch64|arm64|armv\d|raspberry/i.test(navigator.userAgent || '') || (navigator.hardwareConcurrency || 8) <= 4;
+    const here = /^(localhost|127\.|\[?::1)/.test(location.hostname || 'localhost') || !/^https?:$/.test(location.protocol);
+    if (!small || !here || ms < (paths ? SLOW.paths : SLOW.plan)) return null;
+    return `${paths ? 'Making the toolpaths' : 'Planning'} took ${Math.round(ms / 1000)} s on this small computer. ncCAM runs in the browser that shows it: open ncSender in a browser on a laptop or desktop (this machine's address, port 8090) and it works there, usually several times faster. Programs still save to this machine.`;
   }
 
   // The part and its settings for next time
@@ -384,9 +398,10 @@ export function mountApp(root, host, engine) {
 
   function planHints(modelStep) {
     if (!S.plan) return '';
+    const slow = !modelStep && S.slow ? `<div class="ncc-hint">${ICONS.info}<span>${esc(S.slow)}</span></div>` : '';
     const w = S.plan.warnings.filter((x) => !modelStep || x.kind === 'undercut' || x.kind === 'sloped' || x.kind === 'edges' || x.kind === 'surface3d');
     if (!w.length && modelStep) return `<div class="ncc-hint">${ICONS.info}<span>Everything can be cut from the top in one setup.</span></div>`;
-    return w.map((x) => `<div class="ncc-hint ${x.kind === 'notool' || x.kind === 'noball' ? 'bad' : ''}">${x.kind === 'notool' || x.kind === 'noball' ? ICONS.warn : ICONS.info}<span>${esc(x.text)}</span></div>`).join('');
+    return slow + w.map((x) => `<div class="ncc-hint ${x.kind === 'notool' || x.kind === 'noball' ? 'bad' : ''}">${x.kind === 'notool' || x.kind === 'noball' ? ICONS.warn : ICONS.info}<span>${esc(x.text)}</span></div>`).join('');
   }
 
   function modelOverlay() {
@@ -600,6 +615,7 @@ export function mountApp(root, host, engine) {
           <div class="ncc-stat"><b class="ncc-mono">${p ? changes : '–'}</b><span>Tool changes</span></div>
         </div>
         <div class="ncc-card"><div class="ncc-label">Checked</div>${checks()}</div>
+        ${S.slow ? `<div class="ncc-hint">${ICONS.info}<span>${esc(S.slow)}</span></div>` : ''}
         <div class="ncc-card">
           <div class="ncc-mono ncc-row-sub" style="margin: 0">${esc(programName())}${r ? ` · ${(r.gcode.split('\n').length - 1).toLocaleString()} lines` : ''}</div>
           <button class="ncc-btn muted" type="button" data-act="save" ${r ? '' : 'disabled'}>Save to File Manager</button>

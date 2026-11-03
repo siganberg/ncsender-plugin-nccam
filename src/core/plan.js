@@ -359,7 +359,11 @@ export function plan(mesh, tools, job, limits = {}) {
     if (drill) return drillOp(drill, n > 1 ? `Drill ${n} holes` : 'Drill the hole', what);
     const near = drills.filter((t) => t.diameter < h.d && h.d - t.diameter <= Math.max(DRILL_UNDER, h.d * 0.06) && fluteOk(t, depth)).sort((a, b) => b.diameter - a.diameter)[0];
     const region = h.regions.flat().length ? h.regions.flatMap((r) => r) : [];
-    let tool = roughTool(region, depth, 0) || null;
+    // A round hole: the largest end mill narrower than it clears all of it
+    // (no offsets needed; a thread's shadow makes them slow), one already in
+    // use if there is one
+    const fits = flats.filter((t) => t.diameter <= maxD && fluteOk(t, depth) && t.diameter / 2 < h.d / 2 - 1e-6);
+    let tool = fits.find((t) => used.has(t.id)) || fits[0] || null;
     if (!tool || tool.diameter > h.d - 0.4) tool = flats.find((t) => t.diameter <= h.d - 0.4 && fluteOk(t, depth)) || null;
     // With a pilot the end mill needs no room to spiral down: any a little
     // smaller than the hole (and no wider than the pilot, so it drops in)
@@ -446,7 +450,6 @@ export function plan(mesh, tools, job, limits = {}) {
   // After the cut-out, the stock past its slot still stands
   const standing = C.difference(rect(stock), C.offset(footprint, Math.max(0, slotW - 0.05)));
   const tabTop = job.tabs.enabled ? (job.tabs.height ?? tabDefaults(job.material).height) : 0;
-  const everywhere = C.offset(rect(stock), 50);
   // One pass: the tip on `lo`'s outline grown CHAMFER_OUT, down to zTip,
   // only where the cone (R wide at z, the bit tr) reaches nothing else: no
   // wall above z, no ledge past the edge below it, no standing stock; and,
@@ -455,7 +458,7 @@ export function plan(mesh, tools, job, limits = {}) {
     if (zTip < -job.throughDepth + 0.1) return { skipped: true }; // into the spoilboard
     const hi = z < analysis.top - EPS ? section(z + EPS) : [];
     const under = C.cleanLoops(C.difference(section(Math.max(zTip, EPS) + EPS), C.offset(lo, 0.01)), TINY);
-    const bad = C.union([...C.offset(hi, tr + 0.1), ...C.offset(standing, tr + 0.1), ...C.offset(under, R + 0.1), ...(keep ? C.difference(everywhere, keep) : [])]);
+    const bad = C.union([...C.offset(hi, tr + 0.1), ...C.offset(standing, tr + 0.1), ...C.offset(under, R + 0.1)]);
     const loops = [];
     let skipped = false;
     // Outside edges: the tip must stay above the tabs (the slot goes deeper)
@@ -465,7 +468,8 @@ export function plan(mesh, tools, job, limits = {}) {
       if (which !== 'outside') loops.push(...holes);
     }
     // Only loops with something to cut: a stretch of 0.5 mm clear of `bad`
-    const inBad = (q) => { let w = 0; for (const l of bad) if (C.pointInLoop(q, l)) w += C.loopArea(l) > 0 ? 1 : -1; return w > 0; };
+    const inside = (q, loops2) => { let w = 0; for (const l of loops2) if (C.pointInLoop(q, l)) w += C.loopArea(l) > 0 ? 1 : -1; return w > 0; };
+    const inBad = (q) => (keep && !inside(q, keep)) || inside(q, bad);
     const cuts = loops.filter((l) => {
       let run = 0;
       for (let i = 0; i < l.length; i++) {
@@ -477,7 +481,7 @@ export function plan(mesh, tools, job, limits = {}) {
       }
       return false;
     });
-    return cuts.length ? { pass: { z, depth: z - zTip, loops: cuts, bad }, skipped } : { skipped };
+    return cuts.length ? { pass: { z, depth: z - zTip, loops: cuts, bad, keep }, skipped } : { skipped };
   }
 
   // Drawn in the model: each band of one slope, by the V-bit of that angle
@@ -503,9 +507,16 @@ export function plan(mesh, tools, job, limits = {}) {
       }
       const passes = [], show = [];
       let skipped = false;
+      // Chamfers between the same heights, as wide: one pass along all of them
+      const alike = new Map();
       for (const band of bands) {
-        const loops = [];
-        for (const t of band.tris) {
+        const key = [band.zb, band.zt, band.w].map((v) => v.toFixed(3)).join('|');
+        if (!alike.has(key)) alike.set(key, []);
+        alike.get(key).push(band);
+      }
+      for (const group of alike.values()) {
+        const band = group[0], loops = [];
+        for (const b of group) for (const t of b.tris) {
           const v = [0, 1, 2].map((k) => { const i = mesh.indices[t * 3 + k] * 3; return [mesh.positions[i], mesh.positions[i + 1]]; });
           loops.push(C.loopArea(v) < 0 ? v.reverse() : v);
         }
