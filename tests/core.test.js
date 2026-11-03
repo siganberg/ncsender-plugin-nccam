@@ -937,3 +937,71 @@ test('a hole too tight to spiral: a pilot drill, then an end mill no wider than 
   }
   assert.ok(rmax > 4.9 && rmax < 5.08, `cut out to r ${rmax}`);
 });
+
+// A W x W x H block with a through hole threaded inside: minor diameter
+// dMin, thread depth t, pitch P (hand: 1 right, -1 left)
+function threadedBlock({ W = 20, H = 8, dMin = 6.65, t = 0.68, P = 1.25, hand = 1, n = 120 } = {}) {
+  const pos = [], idx = [], c = W / 2;
+  const v = (x, y, z) => (pos.push(x, y, z), pos.length / 3 - 1);
+  const r = (a, z) => {
+    const u = (((z - (hand * P * a) / (2 * Math.PI)) / P) % 1 + 1) % 1;
+    return dMin / 2 + t * Math.min(1, Math.max(0, (0.5 - Math.abs(u - 0.5)) * 2.4));
+  };
+  const m = Math.round(H / 0.05), wall = [];
+  for (let j = 0; j <= m; j++) {
+    const z = (H * j) / m;
+    wall.push(Array.from({ length: n }, (_, i) => { const a = (2 * Math.PI * i) / n, rr = r(a, z); return v(c + rr * Math.cos(a), c + rr * Math.sin(a), z); }));
+  }
+  for (let j = 0; j < m; j++) for (let i = 0; i < n; i++) {
+    const i1 = (i + 1) % n, v00 = wall[j][i], v10 = wall[j][i1], v01 = wall[j + 1][i], v11 = wall[j + 1][i1];
+    idx.push(v00, v01, v10, v10, v01, v11); // facing the hole's axis
+  }
+  const sq = Array.from({ length: n }, (_, i) => { const a = (2 * Math.PI * i) / n, s = c / Math.max(Math.abs(Math.cos(a)), Math.abs(Math.sin(a))); return [c + s * Math.cos(a), c + s * Math.sin(a)]; });
+  const top = sq.map(([x, y]) => v(x, y, H)), bot = sq.map(([x, y]) => v(x, y, 0));
+  for (let i = 0; i < n; i++) {
+    const i1 = (i + 1) % n;
+    idx.push(wall[m][i], top[i], top[i1], wall[m][i], top[i1], wall[m][i1]); // top
+    idx.push(wall[0][i], bot[i1], bot[i], wall[0][i], wall[0][i1], bot[i1]); // bottom
+    idx.push(bot[i], bot[i1], top[i], bot[i1], top[i1], top[i]); // outside
+  }
+  return { positions: Float64Array.from(pos), indices: Uint32Array.from(idx), faces: [], solids: 1, names: [] };
+}
+
+test('a thread modeled in a hole is found: size, pitch, hand', () => {
+  for (const [hand, name] of [[1, 'M8×1.25'], [-1, 'M8×1.25 LH']]) {
+    const mesh = N.orient(threadedBlock({ hand }), 'top');
+    const th = N.findThread(mesh, { x: 10, y: 10, d: 6.65 }, 0, 8);
+    assert.ok(th, name);
+    assert.equal(N.threadName(th), name);
+    assert.ok(Math.abs(th.pitch - 1.25) < 0.01 && Math.abs(th.major - 8.01) < 0.05 && Math.abs(th.minor - 6.65) < 0.05, JSON.stringify(th));
+  }
+  // A plain hole has none
+  assert.equal(N.findThread(N.orient(threadedBlock({ t: 0 }), 'top'), { x: 10, y: 10, d: 6.65 }, 0, 8), null);
+});
+
+test('a modeled thread is milled after its hole, on the helix, with a thread mill that fits', () => {
+  const mill = { id: 30, toolId: 30, name: 'thread mill', type: 'thread-mill', diameter: 6, metadata: { sku: 'NFC-D5.0×P1.0-1.5', reach: 15 }, dimensions: { flute_length: 1 } };
+  const lib = N.normalizeTools([...LIBRARY, mill]);
+  const mesh = N.orient(threadedBlock(), 'top');
+  const p = N.toolpaths(N.plan(mesh, lib, { ...N.defaultJob(N.analyze(mesh)), material: 'aluminum' }));
+  const t = p.ops.find((o) => o.kind === 'thread');
+  assert.ok(t && t.tool.name === 'thread mill' && /M8×1\.25/.test(t.detail));
+  const hole = p.ops.find((o) => o.id === t.after);
+  assert.ok(hole && p.ops.indexOf(hole) < p.ops.indexOf(t));
+  assert.ok(!p.warnings.some((w) => w.kind === 'sloped' || w.kind === 'edges'));
+  // The cutter's centre: never further out than (major - cutter) / 2, the
+  // helix rising one pitch a turn, counter-clockwise (right-hand, climb)
+  const R = (t.thread.major - 5) / 2, c = t.centers[0];
+  const ring = t.moves.filter((m) => !m.r && Math.abs(Math.hypot(m.x - c.x, m.y - c.y) - R) < 1e-6);
+  assert.ok(ring.length > 100);
+  assert.ok(t.moves.every((m) => m.r || Math.hypot(m.x - c.x, m.y - c.y) <= R + 1e-6));
+  const a0 = Math.atan2(ring[10].y - c.y, ring[10].x - c.x), a1 = Math.atan2(ring[11].y - c.y, ring[11].x - c.x);
+  let da = a1 - a0; if (da < -Math.PI) da += 2 * Math.PI; if (da > Math.PI) da -= 2 * Math.PI;
+  assert.ok(da > 0, 'counter-clockwise');
+  assert.ok(Math.abs((ring[11].z - ring[10].z) - (1.25 * da) / (2 * Math.PI)) < 1e-6, 'one pitch a turn');
+  assert.equal(N.simulate(p, 0.1).collisions.length, 0);
+  // No thread mill: the hole at the minor diameter, and a note
+  const { ops, warnings } = N.plan(mesh, N.normalizeTools(LIBRARY), N.defaultJob(N.analyze(mesh)));
+  assert.ok(!ops.some((o) => o.kind === 'thread'));
+  assert.ok(warnings.some((w) => w.kind === 'thread' && /no thread mill/.test(w.text)));
+});

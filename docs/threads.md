@@ -1,6 +1,25 @@
 # Thread milling: design
 
-Status: planned, nothing built yet.
+Status: modeled threads are found and milled (order of work 1–3 below, with
+the user's NFC-D3.15 A60 thread mill and the vhex bearing mount's 18 M4×0.7
+holes as the check). Not yet: a form to enter a mill's reach and neck
+(ncCAM takes 3 × and 0.7 × the cutter and says so), cosmetic threads,
+external threads.
+
+As built:
+- `findThread` (`mesh.js`): the triangles near a hole sliced every 0.04 mm;
+  the wall's distance from the axis, its first harmonic's angle unwrapped up
+  the run and fitted (on the middle half, then grown while it stays on the
+  helix: run-outs at a face don't count). Named by `threadName`.
+- The hole is cut to the minor diameter as before (drill, pilot and end
+  mill, or spiral), then "Mill the threads": down the middle, a half circle
+  out onto the helix, up a pitch a turn (counter-clockwise for right-hand),
+  a half circle back; passes 0.5/0.8/1/1 of the depth (Fast 0.6/1, Smooth
+  0.4/0.65/0.85/1/1). Feed at the cutter's edge, slowed to its centre's path.
+- The simulator cuts with the mill's neck: the tooth works under the crests,
+  which a height grid can't show.
+- The flanks and run-outs don't trip the "fillets left square" or "edges
+  face down" notes, and countersinks on threaded holes count as chamfers.
 
 Two ways a threaded hole reaches ncCAM:
 

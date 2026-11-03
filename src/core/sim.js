@@ -22,7 +22,9 @@ export class HeightMap {
 // The tool's end as rings of columns around its center: how far above the
 // tip each one is (0 for a flat end).
 export function toolStamp(tool, cell) {
-  const r = tool.diameter / 2;
+  // A thread mill's tooth cuts under the thread's crests, which a height
+  // grid can't show: seen from above it is its neck
+  const r = (tool.kind === 'threadmill' ? tool.neck : tool.diameter) / 2;
   const n = Math.ceil(r / cell);
   const out = [];
   for (let j = -n; j <= n; j++) for (let i = -n; i <= n; i++) {
@@ -88,12 +90,12 @@ export function edgeMap(hm) {
 }
 
 export function cutMoveExact(hm, tool, a, b, opIndex) {
-  const r = tool.diameter / 2, cell = hm.cell, rc = r / cell;
+  const r = (tool.kind === 'threadmill' ? tool.neck : tool.diameter) / 2, cell = hm.cell, rc = r / cell;
   const tip = tool.kind === 'ball' ? (d) => r - Math.sqrt(Math.max(0, r * r - d * d))
     : (tool.kind === 'vbit' || tool.kind === 'chamfer' || tool.kind === 'drill')
       ? ((t) => (d) => d / t)(Math.tan(((tool.angle || (tool.kind === 'drill' ? 118 : 90)) * Math.PI) / 360))
       : () => 0;
-  const flat = !tool.kind || tool.kind === 'flat' || tool.kind === 'surfacing';
+  const flat = !tool.kind || tool.kind === 'flat' || tool.kind === 'surfacing' || tool.kind === 'threadmill';
   const { h, sx, sy, wx, wy, gap, deep, nx, ny } = hm;
   const band = 1.5 * cell, reach = rc + 1.5;
   // One column against the tool at height z, its axis (gx, gy) away in cells

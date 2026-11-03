@@ -356,6 +356,55 @@ function face(path, stock, r, fd, zTop, zBottom) {
   path.retract();
 }
 
+// Threads with a single-form thread mill, hole by hole (nearest next): down
+// the middle of the hole (cut to the thread's minor diameter, wider than the
+// cutter) to the bottom, a half circle out onto the helix, up one pitch a
+// turn to the top (climb milling: counter-clockwise for a right-hand
+// thread), a half circle back to the middle, out. In passes, each a little
+// further out, the last two at full depth (a spring pass).
+const THREAD_PASSES = { fast: [0.6, 1], balanced: [0.5, 0.8, 1, 1], smooth: [0.4, 0.65, 0.85, 1, 1] };
+function threads(path, op, fd, finish) {
+  const th = op.thread, d = op.tool.cut ?? op.tool.diameter;
+  const Rfull = Math.max(0, (th.major - d) / 2), P = th.pitch, dir = th.hand === 'left' ? -1 : 1;
+  const seg = 72; // a turn
+  const left = op.centers.slice();
+  while (left.length) {
+    const at = path.at || left[0];
+    let best = 0;
+    left.forEach((q, i) => { if (Math.hypot(q.x - at.x, q.y - at.y) < Math.hypot(left[best].x - at.x, left[best].y - at.y)) best = i; });
+    const [c] = left.splice(best, 1);
+    path.goTo(c.x, c.y, op.zTop);
+    for (const f of THREAD_PASSES[finish] || THREAD_PASSES.balanced) {
+      const R = Rfull * f;
+      // Straight down the middle: nothing there but air
+      path.feed(c.x, c.y, op.zTop, fd.plunge);
+      path.feed(c.x, c.y, th.zLow, fd.plunge);
+      // Out along a half circle R/2 wide, meeting the helix going its way
+      let z = th.zLow;
+      for (let k = 1; k <= seg / 2; k++) {
+        const a = Math.PI + (Math.PI * k) / (seg / 2); // π..2π round (R/2, 0)
+        z = th.zLow + (P / 4) * (k / (seg / 2));
+        path.feed(c.x + R / 2 + (R / 2) * Math.cos(a), c.y + dir * (R / 2) * Math.sin(a), z, fd.feed);
+      }
+      // Up the helix
+      const turns = (th.zHigh - z) / P, steps = Math.max(1, Math.ceil(turns * seg));
+      let a = 0;
+      for (let k = 1; k <= steps; k++) {
+        a = (2 * Math.PI * turns * k) / steps;
+        path.feed(c.x + R * Math.cos(a), c.y + dir * R * Math.sin(a), z + (P * a) / (2 * Math.PI), fd.feed);
+      }
+      // Back in along a half circle to the middle
+      const z1 = z + P * turns, cx = c.x + (R / 2) * Math.cos(a), cy = c.y + dir * (R / 2) * Math.sin(a);
+      for (let k = 1; k <= seg / 2; k++) {
+        const b = a + (Math.PI * k) / (seg / 2);
+        path.feed(cx + (R / 2) * Math.cos(b), cy + dir * (R / 2) * Math.sin(b), Math.min(op.zTop, z1 + (P / 4) * (k / (seg / 2))), fd.feed);
+      }
+    }
+    path.feed(c.x, c.y, op.zTop, fd.feed);
+    path.retract();
+  }
+}
+
 // A hole an end mill only a little smaller than it rounds to size, after a
 // pilot drill took the middle: down into the pilot, then a helix out at the
 // hole's edge (climb: counter-clockwise), a step-down a turn, a last full
@@ -879,6 +928,7 @@ export function toolpaths(p) {
       }
       case 'finish3d': surface3d(path, op.surface, op.tool, fd, op.ridge, 0, op.left ?? LAYER_LEFT, op.steep !== false); break;
       case 'drill': drill(path, op.centers, fd, zTop, op.zBottom, op.tool.diameter); break;
+      case 'thread': threads(path, op, fd, p.job.finish); break;
       case 'cutout': cutout(path, op.region, r, fd, zTop, op.zBottom, p.job, allowance); break;
       // Edges on the model's top stand on any stock left above it (no
       // facing): the same outline, higher (the cut-out and pockets went

@@ -35,6 +35,7 @@ const ICONS = {
   cutout: svg('<rect x="3" y="5" width="18" height="14" rx="2" stroke-dasharray="3 2.5"/>'),
   rough3d: svg('<path d="M3 19h4v-4h3v-4h4v4h3v4h4"/>'),
   finish3d: svg('<path d="M3 18c3 0 4-9 9-9s6 9 9 9"/>'),
+  thread: svg('<path d="M8 4h8M8 8l8-2M8 12l8-2M8 16l8-2M8 20h8M8 4v16M16 4v16"/>'),
   chamfer: svg('<path d="M4 20V9l5-5h11v16z"/><path d="M9 4v5H4" stroke-dasharray="2 2"/>'),
   rest3d: svg('<path d="M3 19h4v-4h3v-4h4v4h3v4h4"/><circle cx="12" cy="17" r="1.5"/>'),
 };
@@ -371,11 +372,12 @@ export function mountApp(root, host, engine) {
   }
 
   function featureName(o) {
-    const d = o.detail.replace(/ · spiral$/, '');
+    const d = o.detail.replace(/ · (spiral|from the pilot)$/, '');
     if (o.kind === 'cutout') return `Outline, ${L(o.zTop)} cut-out`;
     if (o.kind === 'rough3d') return `3D surface, ${L(o.zTop)} tall`;
     if (o.kind === 'hole' || o.kind === 'drill') return `${o.centers.length > 1 ? `${o.centers.length} holes` : 'Hole'}, ${d}`;
     if (o.kind === 'step') return `Step, ${d}`;
+    if (o.kind === 'thread') return `${o.count > 1 ? `${o.count} ${o.thread.name} threads` : `${o.thread.name} thread`}, ${L(o.thread.zHigh - o.thread.zLow)} deep`;
     if (o.kind === 'chamfer') return `${o.count > 1 ? `${o.count} chamfers` : 'Chamfer'}, ${L(o.size)} \u00d7 ${Math.round(o.angle * 10) / 10}\u00b0`;
     return `Pocket, ${d.split(' · ').pop()}`;
   }
@@ -390,7 +392,7 @@ export function mountApp(root, host, engine) {
   function modelOverlay() {
     if (!S.plan) return '';
     const kinds = [...new Set(S.plan.ops.filter((o) => o.kind !== 'face' && o.kind !== 'corners' && o.kind !== 'finish3d' && o.kind !== 'rest3d' && o.id !== 'chamfer').map((o) => o.kind))];
-    const label = { pocket: 'Pockets', hole: 'Holes', drill: 'Holes', step: 'Steps', cutout: 'Outline', rough3d: '3D surface', chamfer: 'Chamfers' };
+    const label = { pocket: 'Pockets', hole: 'Holes', drill: 'Holes', step: 'Steps', cutout: 'Outline', rough3d: '3D surface', chamfer: 'Chamfers', thread: 'Threads' };
     return `<div class="ncc-overlay tr">${kinds.map((k) => `<span class="ncc-chip"><span class="ncc-swatch" style="background: ${OP_COLORS[k]}"></span>${label[k]}</span>`).join('')}</div>
       <div class="ncc-overlay bl"><span class="ncc-chip">Drag to rotate</span><span class="ncc-chip">Scroll to zoom</span><span class="ncc-chip">Click a face to put it on top</span></div>`;
   }
@@ -575,7 +577,7 @@ export function mountApp(root, host, engine) {
   }
 
   function toolChoices(o) {
-    const kinds = o.kind === 'drill' ? ['drill'] : o.kind === 'face' ? ['surfacing', 'flat'] : o.kind === 'finish3d' ? ['ball', 'flat'] : o.kind === 'chamfer' ? ['vbit', 'chamfer'] : ['flat'];
+    const kinds = o.kind === 'drill' ? ['drill'] : o.kind === 'face' ? ['surfacing', 'flat'] : o.kind === 'finish3d' ? ['ball', 'flat'] : o.kind === 'chamfer' ? ['vbit', 'chamfer'] : o.kind === 'thread' ? ['threadmill'] : ['flat'];
     const list = S.tools.filter((t) => kinds.includes(t.kind) && (o.angle == null || Math.abs(t.angle / 2 - o.angle) <= 1.5)).sort((a, b) => b.diameter - a.diameter);
     return list.some((t) => t.id === o.tool.id) ? list : [o.tool, ...list];
   }

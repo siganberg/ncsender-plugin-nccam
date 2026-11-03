@@ -26,6 +26,7 @@ export function toolKind(tool) {
   if (t.startsWith('ball')) return 'ball';
   if (t.startsWith('v')) return 'vbit';
   if (t.startsWith('chamfer')) return 'chamfer';
+  if (t.startsWith('thread')) return 'threadmill';
   return t || 'flat';
 }
 
@@ -73,7 +74,24 @@ export function normalizeTools(list) {
       fluteLength: Number(t.dimensions?.flute_length) || null,
       flutes: Number(t.metadata?.flutes) || 2,
       ...(/^(vbit|chamfer)$/.test(toolKind(t)) ? { angle: vAngle(t) } : {}),
+      ...(toolKind(t) === 'threadmill' ? threadMill(t) : {}),
     }));
+}
+
+// A single-form thread mill: its cutting diameter and the pitches it cuts
+// (from metadata, else a SKU or name like "D3.15×P0.5-0.8", else the
+// tool's diameter and any pitch), how deep it reaches below the shank
+// (metadata.reach, else 3 × the cutting diameter: `assumed`), and its neck
+// (narrower than the cutter; 0.7 × it unless given).
+export function threadMill(t) {
+  const md = t.metadata || {}, text = [md.sku, t.name, md.notes].filter(Boolean).join(' ');
+  const m = text.match(/D\s*(\d+(?:\.\d+)?)\s*[×xX*]\s*P(?:itch)?\s*(\d+(?:\.\d+)?)\s*-\s*(\d+(?:\.\d+)?)/);
+  const cut = Number(md.cut_diameter) || (m ? Number(m[1]) : Number(t.diameter));
+  const reach = Number(md.reach) || Number(t.dimensions?.neck_length) || 0;
+  return {
+    cut, pitchMin: Number(md.pitch_min) || (m ? Number(m[2]) : 0), pitchMax: Number(md.pitch_max) || (m ? Number(m[3]) : Infinity),
+    reach: reach || 3 * cut, reachAssumed: !reach, neck: Number(md.neck_diameter) || 0.7 * cut,
+  };
 }
 
 // A V-bit's included angle. The Tool Library keeps half of it in

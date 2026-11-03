@@ -128,7 +128,7 @@ export function analyze(mesh, tol = 1e-3) {
     undercut: faceDown && m.inside > MISSED_LIMIT,
     squareEdges: faceDown && m.inside <= MISSED_LIMIT,
     sloped: slopedArea > 1e-3 * totalArea,
-    undercutArea, slopedArea, slopedShare: totalArea > 0 ? slopedArea / totalArea : 0, missed: m.inside, missedTotal: m.total,
+    undercutArea, slopedArea, totalArea, slopedShare: totalArea > 0 ? slopedArea / totalArea : 0, missed: m.inside, missedTotal: m.total,
   };
 }
 
@@ -140,14 +140,16 @@ const MISSED_LIMIT = 0.05;
 // one. Each: angle (from vertical, as a V-bit's half angle), bottom and top
 // heights, width, its triangles and their area.
 const CHAMFER_WIDEST = 12;
-export function chamferBands(mesh) {
+// skip: triangles that aren't chamfers (a thread's flanks); besides: ones a
+// chamfer may border though they slope (a thread and where it runs out)
+export function chamferBands(mesh, { skip = null, besides = null } = {}) {
   const p = mesh.positions, ix = mesh.indices, nTri = ix.length / 3;
   const nz = new Float64Array(nTri).fill(NaN);
   // A cone's facets lean a degree or so either way of its true slope
   const slopeTol = Math.sin((1.5 * Math.PI) / 180);
   for (let t = 0; t < nTri; t++) {
     const n = triangleNormal(mesh, t);
-    if (n[2] > 0.17 && n[2] < 0.985) nz[t] = n[2]; // 10° to 80° from flat
+    if (n[2] > 0.17 && n[2] < 0.985 && !skip?.has(t)) nz[t] = n[2]; // 10° to 80° from flat, not a thread's flank
   }
   // Triangles at the same slope that share a corner are one band
   const parent = Array.from({ length: nTri }, (_, i) => i);
@@ -195,7 +197,7 @@ export function chamferBands(mesh) {
     let alone = true;
     for (const t of tris) {
       for (let k = 0; k < 3 && alone; k++) for (const u of around.get(keyOf(ix[t * 3 + k] * 3))) {
-        if (mine.has(u)) continue;
+        if (mine.has(u) || besides?.has(u)) continue; // a thread's flank may border it
         const z = triangleNormal(mesh, u)[2];
         if (Math.abs(z) < 0.985 && Math.abs(z) > 0.03) { alone = false; break; }
       }
@@ -318,6 +320,141 @@ export function slice(mesh, z) {
     if (pts.length === 2) segs.push(pts);
   }
   return chain(segs);
+}
+
+// A thread modeled in the round hole at c (x, y, d) between zLo and zHi:
+// cut across, its wall swings out and in once a turn, and where it is
+// furthest out turns steadily with height, one turn a pitch. Measured on
+// the triangles near the hole only, every 0.04 mm: the swing's size and
+// angle from the first harmonic of the wall's distance by angle. Returns
+// { major, minor, pitch, hand, zLo, zHi, area } or null.
+export function findThread(mesh, c, zLo, zHi) {
+  const p = mesh.positions, ix = mesh.indices, nTri = ix.length / 3;
+  const R = c.d / 2 + 2;
+  const near = [];
+  for (let t = 0; t < nTri; t++) {
+    let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+    for (let k = 0; k < 3; k++) { const v = ix[t * 3 + k] * 3; x0 = Math.min(x0, p[v]); x1 = Math.max(x1, p[v]); y0 = Math.min(y0, p[v + 1]); y1 = Math.max(y1, p[v + 1]); }
+    if (Math.hypot(Math.max(0, x0 - c.x, c.x - x1), Math.max(0, y0 - c.y, c.y - y1)) < R) near.push(t);
+  }
+  const dz = 0.04, samples = [];
+  for (let z = zLo + dz / 2; z < zHi; z += dz) {
+    let sw = 0, sc = 0, ss = 0, rmin = Infinity, rmax = -Infinity;
+    for (const t of near) {
+      const pts = [];
+      for (let k = 0; k < 3; k++) {
+        const a = ix[t * 3 + k] * 3, b = ix[t * 3 + (k + 1) % 3] * 3;
+        const za = p[a + 2] - z, zb = p[b + 2] - z;
+        if ((za < 0) !== (zb < 0)) { const f = za / (za - zb); pts.push([p[a] + (p[b] - p[a]) * f - c.x, p[a + 1] + (p[b + 1] - p[a + 1]) * f - c.y]); }
+      }
+      if (pts.length !== 2) continue;
+      const ra = Math.hypot(...pts[0]), rb = Math.hypot(...pts[1]);
+      if (ra > R || rb > R) continue;
+      const len = Math.hypot(pts[1][0] - pts[0][0], pts[1][1] - pts[0][1]);
+      const mx = (pts[0][0] + pts[1][0]) / 2, my = (pts[0][1] + pts[1][1]) / 2, r = Math.hypot(mx, my);
+      sw += len; sc += len * mx; ss += len * my; // r cosθ, r sinθ
+      rmin = Math.min(rmin, ra, rb); rmax = Math.max(rmax, ra, rb);
+    }
+    // A whole wall round the hole, or nothing to measure here
+    if (sw < Math.PI * c.d * 0.8) continue;
+    samples.push({ z, rmin, rmax, amp: (2 * Math.hypot(sc, ss)) / sw, phi: Math.atan2(ss, sc) });
+  }
+  if (globalThis.process?.env?.THREAD_DEBUG) console.log('samples', samples.length, samples.filter((_, k) => k % 10 === 0).map((q) => `${q.z.toFixed(2)}:${q.rmin.toFixed(3)}-${q.rmax.toFixed(3)} amp${q.amp.toFixed(3)} phi${(q.phi * 57.3).toFixed(0)}`).join(' | '));
+  // The longest run of heights where the wall swings
+  let best = [], run = [];
+  for (const q of samples) {
+    const swings = q.rmax - q.rmin > 0.08 && q.amp > 0.03;
+    const prev = run[run.length - 1];
+    // The same wall as below: a countersink or a step above ends the run
+    if (swings && (!prev || (q.z - prev.z < dz * 1.5 && Math.abs(q.rmin - prev.rmin) < 0.05 && Math.abs(q.rmax - prev.rmax) < 0.05))) run.push(q);
+    else { if (run.length > best.length) best = run; run = swings ? [q] : []; }
+  }
+  if (run.length > best.length) best = run;
+  if (globalThis.process?.env?.THREAD_DEBUG) console.log('run', best.length, 'of', samples.length, best[0]?.z.toFixed(2), best[best.length - 1]?.z.toFixed(2));
+  if (best.length < 8) return null;
+  // The angle unwrapped up the run: one turn a pitch, the same way all along
+  const phi = [best[0].phi];
+  for (let k = 1; k < best.length; k++) {
+    let d = best[k].phi - best[k - 1].phi;
+    while (d > Math.PI) d -= 2 * Math.PI;
+    while (d < -Math.PI) d += 2 * Math.PI;
+    phi.push(phi[k - 1] + d);
+  }
+  const run0 = best;
+  const fit = (lo, hi) => {
+    let n = 0, mz = 0, mp = 0, sxy = 0, sxx = 0;
+    for (let k = lo; k < hi; k++) { n++; mz += run0[k].z; mp += phi[k]; }
+    mz /= n; mp /= n;
+    for (let k = lo; k < hi; k++) { sxy += (run0[k].z - mz) * (phi[k] - mp); sxx += (run0[k].z - mz) ** 2; }
+    const slope = sxy / sxx;
+    return { slope, at: (k) => mp + slope * (run0[k].z - mz) };
+  };
+  // Fitted on the middle half, then grown each way while the wall stays on
+  // that helix: where the thread runs out at a face, it doesn't
+  const q = best.length >> 2;
+  let line = fit(q, best.length - q);
+  let lo = q, hi = best.length - q;
+  while (lo > 0 && Math.abs(phi[lo - 1] - line.at(lo - 1)) < 0.3) lo--;
+  while (hi < best.length && Math.abs(phi[hi] - line.at(hi)) < 0.3) hi++;
+  line = fit(lo, hi);
+  const all = best;
+  best = all.slice(lo, hi);
+  const zs = best.map((s2) => s2.z), n = zs.length, slope = line.slope;
+  let rms = 0;
+  for (let k = 0; k < n; k++) rms += (phi[lo + k] - line.at(lo + k)) ** 2;
+  rms = Math.sqrt(rms / n);
+  const pitch = (2 * Math.PI) / Math.abs(slope);
+  const turns = (zs[n - 1] - zs[0]) / pitch;
+  if (globalThis.process?.env?.THREAD_DEBUG) console.log('fit pitch', pitch.toFixed(3), 'rms', rms.toFixed(3), 'turns', turns.toFixed(1), 'z', zs[0].toFixed(2), zs[n - 1].toFixed(2));
+  if (!(pitch > 0.2 && pitch < 6) || rms > 0.35 || turns < 1.5) return null;
+  const med = (a) => a.slice().sort((x, y) => x - y)[a.length >> 1];
+  const major = 2 * med(best.map((q) => q.rmax)), minor = 2 * med(best.map((q) => q.rmin));
+  const depth = (major - minor) / 2;
+  if (depth < 0.3 * pitch || depth > 0.95 * pitch) return null;
+  // Its flanks: sloped faces the thread explains, facing up and down
+  let area = 0, below = 0;
+  const tris = [], ring = [];
+  for (const t of near) {
+    const a = ix[t * 3] * 3, b = ix[t * 3 + 1] * 3, cc = ix[t * 3 + 2] * 3;
+    const zm = (p[a + 2] + p[b + 2] + p[cc + 2]) / 3;
+    if (zm < zs[0] - pitch || zm > zs[n - 1] + pitch) continue;
+    // A pitch further out too (`ring`): where it runs into a countersink or
+    // a face; only its flanks are the thread (`tris`)
+    const rc = Math.hypot((p[a] + p[b] + p[cc]) / 3 - c.x, (p[a + 1] + p[b + 1] + p[cc + 1]) / 3 - c.y);
+    if (rc > major / 2 + pitch) continue;
+    ring.push(t);
+    if (rc > major / 2 + 0.1) continue;
+    const ux = p[b] - p[a], uy = p[b + 1] - p[a + 1], uz = p[b + 2] - p[a + 2], vx = p[cc] - p[a], vy = p[cc + 1] - p[a + 1], vz = p[cc + 2] - p[a + 2];
+    const nz = ux * vy - uy * vx, ar = Math.hypot(uy * vz - uz * vy, uz * vx - ux * vz, nz) / 2;
+    if (nz > 0) area += ar; else if (nz < 0) below += ar;
+    tris.push(t);
+  }
+  return { major, minor, pitch, hand: slope > 0 ? 'right' : 'left', zLo: zs[0], zHi: zs[n - 1], area, below, tris, ring };
+}
+
+// The standard a thread is (metric, then unified), or its sizes.
+const METRIC = [[2, 0.4], [2.5, 0.45], [3, 0.5], [4, 0.7], [5, 0.8], [6, 1], [8, 1.25], [8, 1], [10, 1.5], [10, 1.25], [12, 1.75], [12, 1.25], [16, 2]];
+const UNIFIED = [['#2-56', 2.184, 56], ['#4-40', 2.845, 40], ['#6-32', 3.505, 32], ['#8-32', 4.166, 32], ['#10-24', 4.826, 24], ['#10-32', 4.826, 32], ['1/4-20', 6.35, 20], ['1/4-28', 6.35, 28], ['5/16-18', 7.938, 18], ['3/8-16', 9.525, 16], ['1/2-13', 12.7, 13]];
+// The area of the faces among `tris` that look up (> 0) or down (< 0)
+export function areaFacing(mesh, tris, sign) {
+  const p = mesh.positions, ix = mesh.indices;
+  let area = 0;
+  for (const t of tris) {
+    const a = ix[t * 3] * 3, b = ix[t * 3 + 1] * 3, c = ix[t * 3 + 2] * 3;
+    const ux = p[b] - p[a], uy = p[b + 1] - p[a + 1], uz = p[b + 2] - p[a + 2], vx = p[c] - p[a], vy = p[c + 1] - p[a + 1], vz = p[c + 2] - p[a + 2];
+    const nz = ux * vy - uy * vx, len = Math.hypot(uy * vz - uz * vy, uz * vx - ux * vz, nz);
+    if (len > 0 && Math.abs(nz) / len > 1e-3 && Math.abs(nz) / len < 0.999 && Math.sign(nz) === sign) area += len / 2;
+  }
+  return area;
+}
+
+export function threadName({ major, pitch, hand }) {
+  const lh = hand === 'left' ? ' LH' : '';
+  const m = METRIC.find(([d, p]) => Math.abs(major - d) < 0.3 && Math.abs(pitch - p) < 0.04);
+  if (m) return `M${m[0]}×${m[1]}${lh}`;
+  const u = UNIFIED.find(([, d, tpi]) => Math.abs(major - d) < 0.3 && Math.abs(pitch - 25.4 / tpi) < 0.04);
+  if (u) return u[0] + lh;
+  return `Ø${Math.round(major * 100) / 100}×${Math.round(pitch * 100) / 100}${lh}`;
 }
 
 // Joins slice segments end to end into loops.

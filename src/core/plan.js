@@ -7,10 +7,10 @@
 // stock minus the part's section just above the band's floor. Each piece of
 // that area becomes one operation: a pocket, a hole, a step, or (at the
 // bottom, around the outside) the cut-out.
-import { analyze, slice, triangleNormal, chamferBands, SHARE_3D } from './mesh.js';
+import { analyze, slice, triangleNormal, chamferBands, findThread, threadName, areaFacing, SHARE_3D } from './mesh.js';
 import { partHeights } from './sim.js';
 import * as C from './clip.js';
-import { feeds, FINISHES, tabDefaults } from './tools.js';
+import { feeds, FINISHES, MATERIALS, tabDefaults } from './tools.js';
 import { len, num } from './units.js';
 
 const EPS = 0.01;
@@ -107,7 +107,6 @@ export function plan(mesh, tools, job, limits = {}) {
   const warnings = [];
   // job.surface3d: true or false when the user chose, else from the shape
   const use3d = job.surface3d ?? analysis.slopedShare > SHARE_3D;
-  if (analysis.squareEdges) warnings.push({ kind: 'edges', text: 'Chamfers or rounded edges face down on this side, so they are left square.' });
   if (analysis.undercut) warnings.push({ kind: 'undercut', text: 'Some features face the other side, so they can’t be reached from the top. Cut this side, then turn the part over for a second setup.' });
 
   const flats = tools.filter((t) => t.kind === 'flat').sort((a, b) => b.diameter - a.diameter);
@@ -345,16 +344,19 @@ export function plan(mesh, tools, job, limits = {}) {
   // 4. Holes: a drill of the same size; otherwise an end mill spirals down,
   // after a drill a little smaller than the hole (a pilot), if there is one;
   // with no end mill that fits, that drill alone (a note says how much under).
+  // Faces the threads explain: their flanks, and where they run out
+  const threadTris = new Set(), threadRing = new Set();
   for (const h of holes.values()) {
+    const last = cutHole(h);
+    if (last) millThreads(h, last);
+  }
+  function cutHole(h) {
     const n = h.centers.length;
     const depth = h.zTop - h.zBottom;
     const what = `Ø${L(h.d)} ${h.through ? 'through' : `${L(h.zTop - h.zBottom)} deep`}`;
     const drillOp = (t, label, detail, extra = {}) => add({ kind: 'drill', label, tool: take(t), zTop: h.zTop, zBottom: h.zBottom, centers: h.centers, detail, ...extra });
     const drill = drills.find((t) => sameD(t.diameter, h.d) && fluteOk(t, depth));
-    if (drill) {
-      drillOp(drill, n > 1 ? `Drill ${n} holes` : 'Drill the hole', what);
-      continue;
-    }
+    if (drill) return drillOp(drill, n > 1 ? `Drill ${n} holes` : 'Drill the hole', what);
     const near = drills.filter((t) => t.diameter < h.d && h.d - t.diameter <= Math.max(DRILL_UNDER, h.d * 0.06) && fluteOk(t, depth)).sort((a, b) => b.diameter - a.diameter)[0];
     const region = h.regions.flat().length ? h.regions.flatMap((r) => r) : [];
     let tool = roughTool(region, depth, 0) || null;
@@ -365,18 +367,49 @@ export function plan(mesh, tools, job, limits = {}) {
     const borer = !tool && near ? flats.find((t) => t.diameter < h.d - 0.02 && t.diameter <= near.diameter + 0.05 && fluteOk(t, depth)) : null;
     if (borer) {
       const pilot = drillOp(near, n > 1 ? `Drill ${n} pilot holes` : 'Drill a pilot hole', `${what} · then ${L(h.d)} with an end mill`, { pilot: true });
-      add({ kind: 'hole', label: n > 1 ? `Cut ${n} holes to size` : 'Cut the hole to size', tool: take(borer), zTop: h.zTop, zBottom: h.zBottom, region, centers: h.centers, bore: true, after: pilot.id, detail: `${what} · from the pilot` });
-      continue;
+      return add({ kind: 'hole', label: n > 1 ? `Cut ${n} holes to size` : 'Cut the hole to size', tool: take(borer), zTop: h.zTop, zBottom: h.zBottom, region, centers: h.centers, bore: true, after: pilot.id, detail: `${what} · from the pilot` });
     }
     if (!tool) {
-      if (!near) { warnings.push({ kind: 'notool', text: `No drill or end mill fits the ${what} hole${n > 1 ? 's' : ''}.` }); continue; }
+      if (!near) { warnings.push({ kind: 'notool', text: `No drill or end mill fits the ${what} hole${n > 1 ? 's' : ''}.` }); return null; }
       const under = L(h.d - near.diameter, job.units === 'in' ? 4 : 2);
-      drillOp(near, n > 1 ? `Drill ${n} holes` : 'Drill the hole', `${what} · ${under} under size`);
       warnings.push({ kind: 'drill', text: `${n > 1 ? `The ${n} ${what} holes are` : `The ${what} hole is`} drilled with ${near.name}, ${under} under size: no end mill fits to cut ${n > 1 ? 'them' : 'it'} to size.` });
-      continue;
+      return drillOp(near, n > 1 ? `Drill ${n} holes` : 'Drill the hole', `${what} · ${under} under size`);
     }
     const pilot = near ? drillOp(near, n > 1 ? `Drill ${n} pilot holes` : 'Drill a pilot hole', `${what} · then ${L(h.d)} with an end mill`, { pilot: true }) : null;
-    add({ kind: 'hole', label: n > 1 ? `Cut ${n} holes` : 'Cut the hole', tool: take(tool), zTop: h.zTop, zBottom: h.zBottom, region, centers: h.centers, detail: `${what} · spiral`, ...(pilot ? { after: pilot.id } : {}) });
+    return add({ kind: 'hole', label: n > 1 ? `Cut ${n} holes` : 'Cut the hole', tool: take(tool), zTop: h.zTop, zBottom: h.zBottom, region, centers: h.centers, detail: `${what} · spiral`, ...(pilot ? { after: pilot.id } : {}) });
+  }
+
+  // Threads modeled in a hole: a single-form thread mill on a helix, after
+  // the hole is cut to the thread's minor diameter
+  function millThreads(h, holeOp) {
+    const found = new Map();
+    for (const c of h.centers) {
+      const th = analysis.sloped ? threadCached(mesh, c, Math.max(0, h.zBottom), h.zTop) : null;
+      if (!th) continue;
+      for (const t of th.tris) threadTris.add(t);
+      for (const t of th.ring) threadRing.add(t);
+      const name = threadName(th);
+      if (!found.has(name)) found.set(name, { th, name, centers: [] });
+      found.get(name).centers.push(c);
+    }
+    for (const { th, name, centers } of found.values()) {
+      const n = centers.length, what = `${n > 1 ? `${n} ` : ''}${name} thread${n > 1 ? 's' : ''}`;
+      // The tooth at the tip; the tip no lower than the hole's floor
+      const zFloor = h.through ? -job.throughDepth : h.zBottom + 0.05;
+      const zLow = Math.max(zFloor, th.zLo - th.pitch / 4), zHigh = Math.min(h.zTop, th.zHi + th.pitch / 2);
+      const mills = tools.filter((t) => t.kind === 'threadmill');
+      const fit = (t) => t.cut < th.minor - 0.05 && th.pitch >= t.pitchMin - 1e-6 && th.pitch <= t.pitchMax + 1e-6 && t.reach >= h.zTop - zLow - 1e-6;
+      const picked = tools.find((t) => t.id === job.toolOverride?.[`thread${name}`] && mills.includes(t));
+      const tool = picked || mills.filter(fit).sort((a, b) => b.cut - a.cut)[0];
+      if (!tool) {
+        const why = !mills.length ? 'no thread mill in your Tool Library' : `no thread mill in your Tool Library is under ${L(th.minor)}, cuts a ${num(th.pitch, 'mm')} mm pitch and reaches ${L(h.zTop - zLow)} deep`;
+        warnings.push({ kind: 'thread', text: `${what[0].toUpperCase()}${what.slice(1)}: ${why}, so ${n > 1 ? 'the holes are' : 'the hole is'} cut to the thread's minor diameter for a tap.` });
+        continue;
+      }
+      if (tool.reachAssumed) warnings.push({ kind: 'thread', text: `${tool.name}: its reach isn't in the Tool Library, so ncCAM takes ${L(tool.reach)} (3 × its ${L(tool.cut)} cutter). Check it reaches ${L(h.zTop - zLow)} below the shank.` });
+      if (['mdf', 'softwood', 'hardwood', 'foam'].includes(job.material)) warnings.push({ kind: 'thread', text: `Threads cut in ${MATERIALS[job.material].name.toLowerCase()} won't hold a screw well.` });
+      add({ id: `thread${name}`, kind: 'thread', label: n > 1 ? `Mill ${n} threads` : 'Mill the thread', tool: take(tool), zTop: h.zTop, zBottom: zLow, centers, thread: { ...th, name, zLow, zHigh }, after: holeOp.id, count: n, detail: `${name} · ${L(zHigh - zLow)} deep · ${th.hand === 'left' ? 'left' : 'right'}-hand` });
+    }
   }
 
   // 5. Cut the part free.
@@ -437,10 +470,11 @@ export function plan(mesh, tools, job, limits = {}) {
 
   // Drawn in the model: each band of one slope, by the V-bit of that angle
   let chamferArea = 0;
+  const chamferTris = new Set();
   if (!did3d && analysis.sloped) {
     const byAngle = new Map();
-    for (const band of chamferBands(mesh)) {
-      chamferArea += band.area; // found: said below whether it's cut
+    for (const band of chamferBands(mesh, { skip: threadTris, besides: threadRing })) {
+      for (const t of band.tris) chamferTris.add(t); // found: said below whether it's cut
       const key = Math.round(band.angle * 2) / 2;
       if (!byAngle.has(key)) byAngle.set(key, []);
       byAngle.get(key).push(band);
@@ -476,6 +510,12 @@ export function plan(mesh, tools, job, limits = {}) {
       add({ id: `chamfers${angle}`, kind: 'chamfer', label: 'Cut the chamfers', tool: take(tool), zTop: analysis.top, zBottom: Math.min(...passes.map((l) => l.z - l.depth)), region: footprint, levels: passes, show, angle, count: bands.length, size: wide, detail: `${bands.length} chamfer${bands.length > 1 ? 's' : ''} \u00b7 ${L(wide)} wide \u00b7 ${deg(angle * 2)} bit` });
     }
   }
+  // Sloped faces the chamfers and threads explain, each counted once
+  const explained = new Set([...threadRing, ...chamferTris]);
+  chamferArea = areaFacing(mesh, explained, 1);
+  const threadBelow = areaFacing(mesh, threadRing, -1);
+  // Faces looking down besides the threads' lower flanks
+  if (analysis.squareEdges && analysis.undercutArea - threadBelow > 1e-3 * (analysis.totalArea || Infinity)) warnings.push({ kind: 'edges', text: 'Chamfers or rounded edges face down on this side, so they are left square.' });
   // Sloped faces besides the chamfers (fillets, curves): what 3D is for
   const curved = analysis.sloped && analysis.slopedArea - chamferArea > 1e-3 * (analysis.slopedArea / Math.max(analysis.slopedShare, 1e-9));
   if (curved && !did3d) warnings.push({ kind: 'sloped', text: chamferArea > 0 ? 'Other sloped or curved faces (fillets) aren\u2019t cut in 3D, so they are left square.' : 'Sloped or curved faces (chamfers, fillets) aren\u2019t cut in 3D yet, so they are left square.' });
@@ -531,7 +571,13 @@ export function plan(mesh, tools, job, limits = {}) {
     const over = job.toolOverride?.[op.id];
     if (over) { const t = tools.find((x) => x.id === over); if (t) op.tool = t; }
     op.enabled = !job.disabled?.[op.id];
-    op.feeds = opFeeds(op.kind === 'chamfer' ? { ...op.tool, diameter: Math.min(op.tool.diameter, 2 * (op.size + CHAMFER_OUT)) } : op.tool);
+    op.feeds = opFeeds(op.kind === 'chamfer' ? { ...op.tool, diameter: Math.min(op.tool.diameter, 2 * (op.size + CHAMFER_OUT)) } : op.kind === 'thread' ? { ...op.tool, diameter: op.tool.cut ?? op.tool.diameter } : op.tool);
+    if (op.kind === 'thread') {
+      // Feed per tooth is at the cutter's edge; its centre goes round a much
+      // smaller circle, so slower
+      const D = op.thread.major, d = op.tool.cut ?? op.tool.diameter;
+      op.feeds = { ...op.feeds, feed: Math.max(20, Math.round((op.feeds.feed * (D - d)) / D)) };
+    }
     // The part's top on a grid fine enough for the finishing tool
     if (op.kind === 'finish3d') op.surface = surfaceGrid(mesh, stock, Math.min(0.2, op.tool.diameter / 16));
   }
@@ -562,6 +608,15 @@ function surfaceGrid(mesh, stock, cell) {
   const g = { x0: stock.minX, y0: stock.minY, cell, nx: Math.ceil((stock.maxX - stock.minX) / cell) + 1, ny: Math.ceil((stock.maxY - stock.minY) / cell) + 1 };
   g.h = partHeights(mesh, g);
   return g;
+}
+
+// Threads found per part and hole: the plan runs again on every change
+const THREADS = new WeakMap();
+function threadCached(mesh, c, zLo, zHi) {
+  if (!THREADS.has(mesh)) THREADS.set(mesh, new Map());
+  const memo = THREADS.get(mesh), key = [c.x, c.y, c.d, zLo, zHi].map((v) => v.toFixed(3)).join(',');
+  if (!memo.has(key)) memo.set(key, findThread(mesh, c, zLo, zHi));
+  return memo.get(key);
 }
 
 function circleLoop(c, n = 32) {
