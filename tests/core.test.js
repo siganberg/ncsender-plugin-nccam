@@ -985,6 +985,15 @@ test('a through hole no end mill reaches through: a pilot drill breaks through, 
   // Without the drill: no tool, as before
   const { p: none } = await make('bracket.step', (j) => j, lib.filter((t) => t.kind !== 'drill'));
   assert.ok(none.warnings.some((w) => w.kind === 'notool' && /Ø/.test(w.text)));
+  // A pilot too small for one circle of the end mill to meet it (3 + 2 × 3 < 10): a tube
+  // would stand loose in the hole, so no bore
+  const thin = N.normalizeTools([
+    { id: 20, toolId: 20, name: '3 mm drill', type: 'drill', diameter: 3, dimensions: { flute_length: 40 } },
+    { id: 21, toolId: 21, name: '3 mm end mill', type: 'flat', diameter: 3, dimensions: { flute_length: top } },
+    { id: 22, toolId: 22, name: '1/2" end mill', type: 'flat', diameter: 12.7, dimensions: { flute_length: 40 } },
+  ]);
+  const { p: tube } = await make('bracket.step', (j) => j, thin);
+  assert.ok(!tube.ops.some((o) => o.bore));
 });
 
 // A W x W x H block with a through hole threaded inside: minor diameter

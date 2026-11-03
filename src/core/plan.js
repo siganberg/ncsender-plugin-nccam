@@ -374,10 +374,14 @@ export function plan(mesh, tools, job, limits = {}) {
     // A through hole no end mill reaches through: a drill pilots it all the
     // way (the break-through too), then an end mill long enough for the part
     // itself, no wider than the pilot, rounds it to size down to its bottom
+    // The end mill runs one circle, so it must reach the pilot's wall: a
+    // pilot plus twice the end mill as wide as the hole, or a tube of stock
+    // would come loose in it
     if (!tool && !borer && h.through) {
-      const pd = drills.filter((t) => t.diameter < h.d - 0.05 && fluteOk(t, depth)).sort((a, b) => b.diameter - a.diameter)[0];
-      const em = pd && flats.find((t) => t.diameter < h.d - 0.02 && t.diameter <= pd.diameter + 0.05 && fluteOk(t, h.zTop));
-      if (em) { borer = em; pilotDrill = pd; bottom = Math.max(h.zBottom, h.zTop - (em.fluteLength || Infinity)); }
+      for (const pd of drills.filter((t) => t.diameter < h.d - 0.05 && fluteOk(t, depth)).sort((a, b) => b.diameter - a.diameter)) {
+        const em = flats.find((t) => t.diameter < h.d - 0.02 && t.diameter <= pd.diameter + 0.05 && pd.diameter + 2 * t.diameter >= h.d + 0.1 && fluteOk(t, h.zTop));
+        if (em) { borer = em; pilotDrill = pd; bottom = Math.max(h.zBottom, h.zTop - (em.fluteLength || Infinity)); break; }
+      }
     }
     if (borer) {
       const pilot = drillOp(pilotDrill, n > 1 ? `Drill ${n} pilot holes` : 'Drill a pilot hole', `${what} · then ${L(h.d)} with an end mill`, { pilot: true });

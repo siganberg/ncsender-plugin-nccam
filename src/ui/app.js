@@ -65,7 +65,7 @@ export function mountApp(root, host, engine) {
     limits: {}, travel: null,
     job: null, plan: null, planning: false, result: null, simChecks: null,
     toast: '',
-    recent: [],
+    recent: [], partKey: null,
   };
   const viewer = new Viewer();
   // A slot past the magazine is still a change by hand
@@ -105,33 +105,42 @@ export function mountApp(root, host, engine) {
 
   // ---------- engine calls ----------
   // last: the saved part to open again ({ name, bytes, upPath, job })
+  // Each open supersedes the one before: an older one stops at its next step
+  let loadSeq = 0;
   async function openFile(file, last = null) {
     if (!file && !last) return;
+    const seq = ++loadSeq, gone = () => seq !== loadSeq;
     const name = last ? last.name : file.name;
     S.fileName = name; S.loading = `Reading ${name}…`; S.error = ''; S.plan = null; S.result = null; S.analysis = null; S.part = null;
     S.step = 1; S.maxStep = 1;
     render();
     try {
       const bytes = last ? last.bytes : await file.arrayBuffer();
+      if (gone()) return;
       // The same file opened again: its settings from last time
-      if (!last && S.recent.some((r) => r.key === store.partKey(name, bytes))) {
-        const kept = await store.load(`part:${store.partKey(name, bytes)}`);
+      const key = store.partKey(name, bytes);
+      if (!last && S.recent.some((r) => r.key === key)) {
+        const kept = await store.load(`part:${key}`);
+        if (gone()) return;
         if (kept?.bytes && sameBytes(kept.bytes, bytes)) last = { ...kept, bytes };
       }
-      S.bytes = bytes.slice(0);
+      S.bytes = bytes.slice(0); S.partKey = key;
       S.lock = last?.lock ?? true;
       const info = await engine('load', { bytes, name, scale: last?.scale }, [bytes]);
+      if (gone()) return;
       S.sides = info.sides; S.fileSize = info.fileSize; S.meshKind = info.mesh || null; S.scale = info.scale;
       if (last?.upPath?.length) {
         S.job = null;
-        for (const up of last.upPath) await orient(up, true);
+        for (const up of last.upPath) { await orient(up, true); if (gone()) return; }
         S.job = { ...N.defaultJob(S.analysis), ...last.job };
         await replan();
       } else {
         await orient(info.best);
       }
+      if (gone()) return;
       remember();
     } catch (e) {
+      if (gone()) return;
       S.error = e.message || String(e);
       S.fileName = '';
     }
@@ -257,8 +266,9 @@ export function mountApp(root, host, engine) {
       <div class="ncc-busy-tip" data-slowtip hidden>Slow for your parts? Open ncSender in a browser on a laptop or desktop (this machine's address, port 8090): ncCAM works there, usually several times faster.</div></div></div>`;
   }
   let busyStart = null;
-  setInterval(() => {
-    if (!root.isConnected) return;
+  const ticker = setInterval(() => {
+    // Closed: let this instance go
+    if (!root.isConnected) { clearInterval(ticker); return; }
     const busy = S.loading || S.planning || (S.result && !S.simChecks && S.step === 4);
     if (!busy) { busyStart = null; return; }
     busyStart ??= performance.now();
@@ -273,9 +283,9 @@ export function mountApp(root, host, engine) {
     if (!S.bytes || !S.job) return;
     clearTimeout(saveTimer);
     const record = { name: S.fileName, bytes: S.bytes, upPath: S.upPath, job: S.job, scale: S.scale, lock: S.lock, savedAt: Date.now() };
-    const first = S.recent[0]?.key !== store.partKey(record.name, record.bytes);
+    const key = S.partKey, first = S.recent[0]?.key !== key;
     saveTimer = setTimeout(async () => {
-      S.recent = await store.keep(record, S.recent);
+      S.recent = await store.keep(record, S.recent, key);
       if (first) render();
     }, 400);
   }
@@ -294,7 +304,7 @@ export function mountApp(root, host, engine) {
   }
   // Recent parts other than the one open
   function recentList() {
-    const open = S.bytes ? store.partKey(S.fileName, S.bytes) : null;
+    const open = S.bytes ? S.partKey : null;
     return S.recent.filter((r) => r.key !== open);
   }
   function when(ms) {
@@ -388,7 +398,7 @@ export function mountApp(root, host, engine) {
             <div class="ncc-file-sub ncc-mono">${a ? `${n(a.size[0])} × ${n(a.size[1])} × ${L(a.size[2])}` : '&nbsp;'}</div></div>
           </div>
           <div style="display: flex; gap: 8px; align-items: center">
-          ${recentList().length ? `<select class="ncc-select ncc-recent-pick" data-recent aria-label="Recent parts"><option value="">Recent parts…</option>${recentList().map((r) => `<option value="${esc(r.key)}">${esc(r.name)} · ${when(r.savedAt)}</option>`).join('')}</select>` : ''}
+          ${recentList().length ? `<select class="ncc-select ncc-recent-pick" data-recent aria-label="Recent parts" ${S.loading ? 'disabled' : ''}><option value="">Recent parts…</option>${recentList().map((r) => `<option value="${esc(r.key)}">${esc(r.name)} · ${when(r.savedAt)}</option>`).join('')}</select>` : ''}
           <label class="ncc-btn muted" style="white-space: nowrap">Open another file<input type="file" accept=".step,.stp,.stl,.3mf,.STEP,.STP,.STL,.3MF" data-file hidden></label>
           </div>
         </div>
