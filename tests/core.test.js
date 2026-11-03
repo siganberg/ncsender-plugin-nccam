@@ -747,14 +747,32 @@ test('chamfer only the outside, or only pockets and holes', async () => {
   assert.equal(outside + inside, all);
 });
 
-test('a chamfer that would reach the tabs skips the outside edge and says so', async () => {
+test('a chamfer that would reach the tabs lifts over them and says so', async () => {
   // 2 mm with a 60° bit goes 3.9 mm down a 5 mm plate: the tabs are 2 mm high
   const { mesh, p } = await make('plate.step', (j) => ({ ...j, chamfer: { size: 2, edges: 'all' } }));
-  assert.ok(p.warnings.some((w) => w.kind === 'chamfer' && /too low/.test(w.text)));
+  assert.ok(p.warnings.some((w) => w.kind === 'chamfer' && /lifts over the tabs/.test(w.text)));
+  assert.ok(!p.warnings.some((w) => w.kind === 'chamfer' && /too low/.test(w.text)));
   const r = chamferCheck(mesh, p, 2);
   assert.equal(r.op.tool.angle, 60);
   assert.equal(r.collisions, 0);
   assert.equal(r.over, 0);
+  // The outside edge is cut, in stretches between the tabs
+  assert.ok(r.op.levels.some((l) => l.loops.length > 1), 'outside loop kept');
+  // Each tab keeps its full height: no V-bit cut below the tab's top over it
+  const { hm } = N.simulate(p, 0.2);
+  const cut = p.ops.find((o) => o.kind === 'cutout');
+  const tabTop = p.job.tabs.height ?? 2;
+  const spots = N.tabSpots(cut.region, cut.tool.diameter / 2, p.job);
+  assert.equal(spots.length, p.job.tabs.count);
+  // The plate's stock is its own size: look at the tab where it joins the
+  // part, just inside the stock's edge
+  const cx = hm.x0 + (hm.nx * hm.cell) / 2, cy = hm.y0 + (hm.ny * hm.cell) / 2;
+  for (let [x, y] of spots) {
+    const d = Math.hypot(cx - x, cy - y), ux = (cx - x) / d, uy = (cy - y) / d;
+    while (x < hm.x0 + 0.3 || y < hm.y0 + 0.3 || x > hm.x0 + hm.nx * hm.cell - 0.3 || y > hm.y0 + hm.ny * hm.cell - 0.3) { x += ux * 0.1; y += uy * 0.1; }
+    const i = Math.floor((y - hm.y0) / hm.cell) * hm.nx + Math.floor((x - hm.x0) / hm.cell);
+    assert.ok(Math.abs(hm.h[i] - tabTop) < 0.05, `tab at ${x.toFixed(1)},${y.toFixed(1)}: ${hm.h[i]}`);
+  }
 });
 
 test('no V-bit: chamfering says so and adds nothing', async () => {

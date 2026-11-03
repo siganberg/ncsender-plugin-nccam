@@ -474,6 +474,21 @@ function makeTabs(length, job, r, zPartBottom) {
   };
 }
 
+// Where the cut-out leaves its tabs: the middle of each, on the tool's path
+// around each outside outline (as cutout() lays them)
+export function tabSpots(footprint, r, job) {
+  if (!job.tabs.enabled) return [];
+  const count = Math.max(0, Math.round(job.tabs.count));
+  const out = [];
+  for (const outer of C.regions(footprint).map((g) => g[0])) {
+    for (const pts of C.simplify(C.cleanLoops(C.offset([outer], r), 0.001), 0.005).filter((l) => C.loopArea(l) > 0)) {
+      const loop = new Loop(pts.slice().reverse());
+      for (let i = 0; i < count; i++) out.push(loop.at(((i + 0.5) / count) * loop.length));
+    }
+  }
+  return out;
+}
+
 function cutout(path, footprint, r, fd, zTop, zBottom, job, allowance) {
   const passes = [{ off: r + allowance, fd }];
   if (allowance > 0) passes.push({ off: r, fd: { ...fd, feed: Math.round(fd.feed * 0.9) }, finish: true });

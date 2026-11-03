@@ -12,6 +12,7 @@ import { partHeights } from './sim.js';
 import * as C from './clip.js';
 import { feeds, FINISHES, MATERIALS, tabDefaults } from './tools.js';
 import { len, num } from './units.js';
+import { tabSpots } from './paths.js';
 
 const EPS = 0.01;
 const TINY = 0.05; // mm²: smaller leftovers are not worth a tool
@@ -449,7 +450,16 @@ export function plan(mesh, tools, job, limits = {}) {
   const slotW = cut && !job.disabled?.cutout ? cut.tool.diameter : 0;
   // After the cut-out, the stock past its slot still stands
   const standing = C.difference(rect(stock), C.offset(footprint, Math.max(0, slotW - 0.05)));
+  let lifted = false; // a chamfer lifts over the tabs
   const tabTop = job.tabs.enabled ? (job.tabs.height ?? tabDefaults(job.material).height) : 0;
+  // Each tab, as far as a V-bit's cone (tr wide) can reach it: the bridge
+  // along the edge, across the cut-out's slot
+  const tabZones = (tr) => {
+    if (!cut || job.disabled?.cutout || !job.tabs.enabled) return [];
+    const r = cut.tool.diameter / 2, bridge = job.tabs.length ?? tabDefaults(job.material).length;
+    const rad = bridge / 2 + r + tr + 0.5;
+    return tabSpots(footprint, r, job).map(([x, y]) => Array.from({ length: 24 }, (_, i) => [x + rad * Math.cos((i * Math.PI) / 12), y + rad * Math.sin((i * Math.PI) / 12)]));
+  };
   // One pass: the tip on `lo`'s outline grown CHAMFER_OUT, down to zTip,
   // only where the cone (R wide at z, the bit tr) reaches nothing else: no
   // wall above z, no ledge past the edge below it, no standing stock; and,
@@ -458,13 +468,15 @@ export function plan(mesh, tools, job, limits = {}) {
     if (zTip < -job.throughDepth + 0.1) return { skipped: true }; // into the spoilboard
     const hi = z < analysis.top - EPS ? section(z + EPS) : [];
     const under = C.cleanLoops(C.difference(section(Math.max(zTip, EPS) + EPS), C.offset(lo, 0.01)), TINY);
-    const bad = C.union([...C.offset(hi, tr + 0.1), ...C.offset(standing, tr + 0.1), ...C.offset(under, R + 0.1)]);
+    // Outside edges: where the tip goes below the tabs' top, the bit lifts
+    // over each tab (the slot goes deeper than the tip everywhere else)
+    const overTabs = job.tabs.enabled && zTip <= Math.max(EPS, tabTop + 0.2);
+    const lifts = overTabs ? tabZones(tr) : [];
+    const bad = C.union([...C.offset(hi, tr + 0.1), ...C.offset(standing, tr + 0.1), ...C.offset(under, R + 0.1), ...lifts]);
     const loops = [];
     let skipped = false;
-    // Outside edges: the tip must stay above the tabs (the slot goes deeper)
-    const outerOk = zTip > Math.max(EPS, tabTop + 0.2) || (!job.tabs.enabled && zTip > -job.throughDepth + 0.1);
     for (const [outer, ...holes] of C.regions(C.offsetMiter(lo, CHAMFER_OUT))) {
-      if (which !== 'inside') { if (outerOk) loops.push(outer); else skipped = true; }
+      if (which !== 'inside') loops.push(outer);
       if (which !== 'outside') loops.push(...holes);
     }
     // Only loops with something to cut: a stretch of 0.5 mm clear of `bad`
@@ -481,7 +493,7 @@ export function plan(mesh, tools, job, limits = {}) {
       }
       return false;
     });
-    return cuts.length ? { pass: { z, depth: z - zTip, loops: cuts, bad, keep }, skipped } : { skipped };
+    return cuts.length ? { pass: { z, depth: z - zTip, loops: cuts, bad, keep }, skipped, overTabs: overTabs && lifts.length > 0 && which !== 'inside' } : { skipped };
   }
 
   // Drawn in the model: each band of one slope, by the V-bit of that angle
@@ -525,10 +537,10 @@ export function plan(mesh, tools, job, limits = {}) {
         // The wall's top, where the chamfer starts
         const lo = C.cleanLoops(C.unionEvenOdd(slice(mesh, band.zb + Math.min(EPS, band.h / 4))), TINY);
         const r = chamferPass({ lo, z: band.zt, zTip: band.zb - CHAMFER_OUT / Math.tan(half(tool)), R: band.w + CHAMFER_OUT, tr: tool.diameter / 2, keep: where });
-        skipped ||= r.skipped;
+        skipped ||= r.skipped; lifted ||= !!r.overTabs;
         if (r.pass) { passes.push(r.pass); show.push({ z: band.zt, loops: seen }); }
       }
-      if (skipped) warnings.push({ kind: 'chamfer', text: `Some ${what} are too low to cut without reaching the tabs or the spoilboard.` });
+      if (skipped) warnings.push({ kind: 'chamfer', text: `Some ${what} are too low to cut without reaching the spoilboard.` });
       if (!passes.length) continue;
       add({ id: `chamfers${angle}`, kind: 'chamfer', label: 'Cut the chamfers', tool: take(tool), zTop: analysis.top, zBottom: Math.min(...passes.map((l) => l.z - l.depth)), region: footprint, levels: passes, show, angle, count: bands.length, size: wide, detail: `${bands.length} chamfer${bands.length > 1 ? 's' : ''} \u00b7 ${L(wide)} wide \u00b7 ${deg(angle * 2)} bit` });
     }
@@ -560,14 +572,16 @@ export function plan(mesh, tools, job, limits = {}) {
         const lo = C.cleanLoops(C.unionEvenOdd(slice(mesh, z - EPS)), TINY);
         if (!lo.length) continue;
         const r = chamferPass({ lo, z, zTip: z - depth, R: w + CHAMFER_OUT, tr: tool.diameter / 2, which });
-        skipped ||= r.skipped;
+        skipped ||= r.skipped; lifted ||= !!r.overTabs;
         if (r.pass) passes.push(r.pass);
       }
-      if (skipped) warnings.push({ kind: 'chamfer', text: `Some edges are too low to chamfer ${L(w)} without cutting the tabs or the spoilboard.` });
+      if (skipped) warnings.push({ kind: 'chamfer', text: `Some edges are too low to chamfer ${L(w)} without cutting the spoilboard.` });
       if (!passes.length) warnings.push({ kind: 'chamfer', text: `No ${chamferArea > 0 ? 'other ' : ''}edge can take a ${L(w)} chamfer with ${tool.name}.` });
       else add({ id: 'chamfer', kind: 'chamfer', label: 'Add Chamfer to top surfaces', tool: take(tool), zTop: analysis.top, zBottom: Math.min(...passes.map((l) => l.z - l.depth)), region: footprint, levels: passes, show: passes.map((l) => ({ z: l.z, loops: l.loops })), size: w, detail: `${L(w)} wide \u00b7 ${Math.round(tool.angle)}\u00b0 bit \u00b7 ${{ all: 'all edges', outside: 'outside edges', inside: 'pockets and holes' }[which]}` });
     }
   }
+
+  if (lifted && ops.some((o) => o.kind === 'chamfer')) warnings.push({ kind: 'chamfer', text: 'The chamfer lifts over the tabs: sand those spots after breaking the part free.' });
 
   // The same pocket more than once (five slots) is one operation over all
   // of them; each is still cut on its own, nearest first.
