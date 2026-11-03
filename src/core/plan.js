@@ -392,23 +392,35 @@ export function plan(mesh, tools, job, limits = {}) {
       if (!found.has(name)) found.set(name, { th, name, centers: [] });
       found.get(name).centers.push(c);
     }
+    // The hole as it is cut: a drill leaves its own size and a point (a
+    // cone of stock above the bottom); an end mill the hole's size, flat
+    const drilled = holeOp.kind === 'drill';
+    const cutD = drilled ? holeOp.tool.diameter : h.d;
+    const cone = drilled ? holeOp.tool.diameter / 2 / Math.tan((59 * Math.PI) / 180) : 0;
+    // From the stock's top when it isn't flattened: the reach counts from there
+    const top = job.disabled?.face ? Math.max(h.zTop, stock.top) : h.zTop;
     for (const { th, name, centers } of found.values()) {
       const n = centers.length, what = `${n > 1 ? `${n} ` : ''}${name} thread${n > 1 ? 's' : ''}`;
-      // The tooth at the tip; the tip no lower than the hole's floor
-      const zFloor = h.through ? -job.throughDepth : h.zBottom + 0.05;
+      // The tooth at the tip; the tip above whatever the hole left at its bottom
+      const zFloor = (h.through ? -job.throughDepth : h.zBottom) + cone + 0.05;
       const zLow = Math.max(zFloor, th.zLo - th.pitch / 4), zHigh = Math.min(h.zTop, th.zHi + th.pitch / 2);
       const mills = tools.filter((t) => t.kind === 'threadmill');
-      const fit = (t) => t.cut < th.minor - 0.05 && th.pitch >= t.pitchMin - 1e-6 && th.pitch <= t.pitchMax + 1e-6 && t.reach >= h.zTop - zLow - 1e-6;
-      const picked = tools.find((t) => t.id === job.toolOverride?.[`thread${name}`] && mills.includes(t));
-      const tool = picked || mills.filter(fit).sort((a, b) => b.cut - a.cut)[0];
+      // Into the hole as cut; the pitch; deep enough; and on the helix the
+      // neck stays inside the crests: (major - cut + neck) / 2 < minor / 2
+      const fit = (t) => t.cut < Math.min(cutD, th.minor) - 0.05 && th.pitch >= t.pitchMin - 1e-6 && th.pitch <= t.pitchMax + 1e-6 && t.reach >= top - zLow - 1e-6 && t.cut - t.neck > th.major - th.minor + 0.04;
+      const id = `thread${name}@${fmt(h.zTop)}-${fmt(h.zBottom)}`;
+      const picked = tools.find((t) => t.id === job.toolOverride?.[id] && mills.includes(t));
+      if (picked && !fit(picked)) warnings.push({ kind: 'thread', text: `${picked.name} doesn't fit the ${what} (too wide for the hole or its crests, the wrong pitch, or too short), so ncCAM picks another.` });
+      const tool = (picked && fit(picked) ? picked : null) || mills.filter(fit).sort((a, b) => b.cut - a.cut)[0];
+      if (zLow >= zHigh - th.pitch) { warnings.push({ kind: 'thread', text: `${what[0].toUpperCase()}${what.slice(1)}: the drill's point leaves too little of the hole to thread, so ${n > 1 ? 'they are' : 'it is'} left for a tap.` }); continue; }
       if (!tool) {
-        const why = !mills.length ? 'no thread mill in your Tool Library' : `no thread mill in your Tool Library is under ${L(th.minor)}, cuts a ${num(th.pitch, 'mm')} mm pitch and reaches ${L(h.zTop - zLow)} deep`;
+        const why = !mills.length ? 'no thread mill in your Tool Library' : `no thread mill in your Tool Library fits (under ${L(Math.min(cutD, th.minor))} with a neck that clears the crests, a ${num(th.pitch, 'mm')} mm pitch, reaching ${L(top - zLow)})`;
         warnings.push({ kind: 'thread', text: `${what[0].toUpperCase()}${what.slice(1)}: ${why}, so ${n > 1 ? 'the holes are' : 'the hole is'} cut to the thread's minor diameter for a tap.` });
         continue;
       }
-      if (tool.reachAssumed) warnings.push({ kind: 'thread', text: `${tool.name}: its reach isn't in the Tool Library, so ncCAM takes ${L(tool.reach)} (3 × its ${L(tool.cut)} cutter). Check it reaches ${L(h.zTop - zLow)} below the shank.` });
+      if (tool.reachAssumed) warnings.push({ kind: 'thread', text: `${tool.name}: its reach isn't in the Tool Library, so ncCAM takes ${L(tool.reach)} (3 × its ${L(tool.cut)} cutter). Check it reaches ${L(top - zLow)} below the shank.` });
       if (['mdf', 'softwood', 'hardwood', 'foam'].includes(job.material)) warnings.push({ kind: 'thread', text: `Threads cut in ${MATERIALS[job.material].name.toLowerCase()} won't hold a screw well.` });
-      add({ id: `thread${name}`, kind: 'thread', label: n > 1 ? `Mill ${n} threads` : 'Mill the thread', tool: take(tool), zTop: h.zTop, zBottom: zLow, centers, thread: { ...th, name, zLow, zHigh }, after: holeOp.id, count: n, detail: `${name} · ${L(zHigh - zLow)} deep · ${th.hand === 'left' ? 'left' : 'right'}-hand` });
+      add({ id, kind: 'thread', label: n > 1 ? `Mill ${n} threads` : 'Mill the thread', tool: take(tool), zTop: h.zTop, zBottom: zLow, centers, thread: { ...th, name, zLow, zHigh }, after: holeOp.id, count: n, detail: `${name} · ${L(zHigh - zLow)} deep · ${th.hand === 'left' ? 'left' : 'right'}-hand` });
     }
   }
 
@@ -568,9 +580,16 @@ export function plan(mesh, tools, job, limits = {}) {
   ops.push(...merged);
 
   for (const op of ops) {
-    const over = job.toolOverride?.[op.id];
+    // Threads and chamfers took the user's pick already, if it fits
+    const over = op.kind === 'thread' || op.kind === 'chamfer' ? null : job.toolOverride?.[op.id];
     if (over) { const t = tools.find((x) => x.id === over); if (t) op.tool = t; }
     op.enabled = !job.disabled?.[op.id];
+    // A bore needs its pilot, a thread its hole: off with them
+    const parent = (op.bore || op.kind === 'thread') && ops.find((o) => o.id === op.after);
+    if (parent && op.enabled && !parent.enabled) {
+      op.enabled = false;
+      warnings.push({ kind: 'notool', text: `\u201c${op.label}\u201d is off too: it needs \u201c${parent.label}\u201d first.` });
+    }
     op.feeds = opFeeds(op.kind === 'chamfer' ? { ...op.tool, diameter: Math.min(op.tool.diameter, 2 * (op.size + CHAMFER_OUT)) } : op.kind === 'thread' ? { ...op.tool, diameter: op.tool.cut ?? op.tool.diameter } : op.tool);
     if (op.kind === 'thread') {
       // Feed per tooth is at the cutter's edge; its centre goes round a much

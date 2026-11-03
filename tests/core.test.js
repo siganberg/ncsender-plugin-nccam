@@ -1005,3 +1005,48 @@ test('a modeled thread is milled after its hole, on the helix, with a thread mil
   assert.ok(!ops.some((o) => o.kind === 'thread'));
   assert.ok(warnings.some((w) => w.kind === 'thread' && /no thread mill/.test(w.text)));
 });
+
+test('thread milling is safe whatever cuts the hole and whatever the user picks', () => {
+  const mesh = N.orient(threadedBlock(), 'top'); // M8×1.25 through, minor 6.65
+  const job = { ...N.defaultJob(N.analyze(mesh)), material: 'aluminum' };
+  const mill = (id, cut, extra = {}) => ({ id, toolId: id, name: `mill ${cut}`, type: 'thread-mill', diameter: 6, metadata: { sku: `D${cut}×P1.0-1.5`, reach: 15, ...extra }, dimensions: { flute_length: 1 } });
+  const facing = LIBRARY.filter((t) => t.type === 'surfacing');
+  const half = { id: 40, toolId: 40, name: '1/2" end mill', type: 'flat', diameter: 12.7, dimensions: { flute_length: 30 } };
+  const plan = (lib, j = job) => N.plan(mesh, N.normalizeTools(lib), j);
+  // A drill the hole's size, nothing else: threads start above the drill's point
+  const drill = { id: 41, toolId: 41, name: '6.65 drill', type: 'drill', diameter: 6.65, dimensions: { flute_length: 30 } };
+  let p = plan([...facing, half, drill, mill(30, 5)]);
+  let t = p.ops.find((o) => o.kind === 'thread');
+  const cone = 6.65 / 2 / Math.tan((59 * Math.PI) / 180);
+  assert.ok(t && t.thread.zLow >= -job.throughDepth + cone, `zLow ${t?.thread.zLow}`);
+  // A drill under the hole's size and a mill too wide for it: no thread op
+  p = plan([...facing, half, { ...drill, diameter: 6.45 }, mill(30, 6.5, { neck_diameter: 4 })]);
+  assert.ok(!p.ops.some((o) => o.kind === 'thread'));
+  // A picked mill too wide: not used, a note
+  const good = mill(30, 5), wide = mill(31, 6.9);
+  const base = plan([...LIBRARY, good, wide]);
+  const id = base.ops.find((o) => o.kind === 'thread').id;
+  p = plan([...LIBRARY, good, wide], { ...job, toolOverride: { [id]: 31 } });
+  assert.equal(p.ops.find((o) => o.kind === 'thread').tool.id, 30);
+  assert.ok(p.warnings.some((w) => w.kind === 'thread' && /doesn't fit/.test(w.text)));
+  // A neck that would rub the crests: not a fit
+  p = plan([...LIBRARY, mill(30, 5, { neck_diameter: 4.6 })]);
+  assert.ok(!p.ops.some((o) => o.kind === 'thread'));
+  // The hole switched off: the thread too
+  const hole = base.ops.find((o) => o.id === base.ops.find((x) => x.kind === 'thread').after);
+  p = plan([...LIBRARY, good, wide], { ...job, disabled: { [hole.id]: true } });
+  assert.equal(p.ops.find((o) => o.kind === 'thread').enabled, false);
+});
+
+test('a bore is off when its pilot is', async () => {
+  const lib = N.normalizeTools([
+    { id: 20, toolId: 20, name: '9.8 mm drill', type: 'drill', diameter: 9.8, dimensions: { flute_length: 30 } },
+    { id: 21, toolId: 21, name: '9.8 mm end mill', type: 'flat', diameter: 9.8, dimensions: { flute_length: 30 } },
+    { id: 22, toolId: 22, name: '1/2" end mill', type: 'flat', diameter: 12.7, dimensions: { flute_length: 30 } },
+  ]);
+  const mesh = N.orient(await loadStep('bracket.step'), 'top');
+  const job = N.defaultJob(N.analyze(mesh));
+  const pilot = N.plan(mesh, lib, job).ops.find((o) => o.pilot);
+  const p = N.plan(mesh, lib, { ...job, disabled: { [pilot.id]: true } });
+  assert.equal(p.ops.find((o) => o.bore).enabled, false);
+});
