@@ -87,6 +87,8 @@ export function createEngine() {
       if (paths) N.toolpaths(p);
       const seconds = paths ? N.runTime(p, timing) : 0;
       const gcode = paths ? N.gcode(p, gcodeOptions) : '';
+      // Rapids into material, checked here (a worker) and not on the page
+      const collisions = paths ? N.simulate(p, N.HeightMap.cellFor(p.stock, 300 * 300)).collisions.map((c) => ({ op: c.op, at: c.at })) : [];
       for (const op of p.ops) delete op.surface; // the height grid stays here
       // Moves go back packed: x, y, z, feed (0 for a rapid)
       for (const op of p.ops) {
@@ -96,7 +98,7 @@ export function createEngine() {
         op.track = t;
         delete op.moves;
       }
-      return { plan: p, gcode, seconds };
+      return { plan: p, gcode, seconds, collisions };
     },
   };
 

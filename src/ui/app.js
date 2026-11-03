@@ -652,7 +652,7 @@ export function mountApp(root, host, engine) {
   }
 
   // ---------- playback ----------
-  const PLAY = { ops: [], moves: null, opOf: null, cum: null, total: 0, t: 0, i: 1, playing: false, speed: 5, hm: null, stamps: [], colors: [], cursor: null };
+  const PLAY = { ops: [], moves: null, opOf: null, cum: null, total: 0, t: 0, i: 1, playing: false, speed: 5, hm: null, stamps: [], colors: [], cursor: null, goal: null };
 
   function playbar() {
     if (!S.result) return '';
@@ -686,7 +686,8 @@ export function mountApp(root, host, engine) {
     viewer.onMarker = null; viewer.onPick = null;
     const p = S.result.plan;
     const ops = p.ops.filter((o) => o.enabled && o.track);
-    const cell = N.HeightMap.cellFor(p.stock, 520 * 520);
+    // A coarser grid on a small computer: half the cutting to show
+    const cell = N.HeightMap.cellFor(p.stock, smallHere() ? 380 * 380 : 520 * 520);
     PLAY.ops = ops;
     PLAY.hm = N.edgeMap(new N.HeightMap(p.stock, cell));
     PLAY.colors = p.ops.map((o) => new Color(OP_COLORS[o.kind]));
@@ -712,7 +713,7 @@ export function mountApp(root, host, engine) {
     }
     PLAY.total = t;
     PLAY.opIndexAt = (time) => { const i = Math.min(n - 1, lowerBound(PLAY.cum, time)); return ops.indexOf(p.ops[PLAY.opOf[i]]); };
-    PLAY.t = 0; PLAY.i = 1; PLAY.cursor = null; PLAY.toolOp = -1; PLAY.snaps = [];
+    PLAY.t = 0; PLAY.i = 1; PLAY.cursor = null; PLAY.toolOp = -1; PLAY.snaps = []; PLAY.goal = null; PLAY.cutT = 0;
     viewer.showStock(PLAY.hm, STOCK_COLORS[p.job.material] || STOCK_COLORS.mdf, S.part);
     // Fit the stock and everywhere a cutting edge goes (a facing bit runs
     // well past a small part's edges), so the bit never fills the view
@@ -757,8 +758,10 @@ export function mountApp(root, host, engine) {
 
   const moveAt = (k) => ({ x: PLAY.moves[k * 4], y: PLAY.moves[k * 4 + 1], z: PLAY.moves[k * 4 + 2], r: PLAY.moves[k * 4 + 3] === 0 });
 
-  // Cuts everything up to time t; returns the rows that changed.
-  function advance(t) {
+  // Cuts everything up to time t, or what fits before `deadline` (then the
+  // rest on the next frames); returns the rows that changed and whether it
+  // got to t.
+  function advance(t, deadline = Infinity) {
     const hm = PLAY.hm, n = PLAY.cum.length;
     let j0 = Infinity, j1 = -1;
     const touch = (a, b, oi) => {
@@ -766,8 +769,12 @@ export function mountApp(root, host, engine) {
       const ja = Math.floor((Math.min(a.y, b.y) - hm.y0) / hm.cell - rad), jb = Math.ceil((Math.max(a.y, b.y) - hm.y0) / hm.cell + rad);
       j0 = Math.min(j0, Math.max(0, ja)); j1 = Math.max(j1, Math.min(hm.ny - 1, jb));
     };
+    let count = 0;
     while (PLAY.i < n && PLAY.cum[PLAY.i] <= t) {
-      if (PLAY.opOf[PLAY.i] !== PLAY.opOf[PLAY.i - 1] && !PLAY.cursor) snapshot();
+      if ((++count & 31) === 0 && performance.now() > deadline) { PLAY.cutT = PLAY.cum[PLAY.i - 1]; return [j0, j1, false]; }
+      // The stock as it is at each operation's start and every tenth of the
+      // program: going back replays only from the nearest
+      if (!PLAY.cursor && (PLAY.opOf[PLAY.i] !== PLAY.opOf[PLAY.i - 1] || Math.floor((PLAY.cum[PLAY.i] / PLAY.total) * 10) > Math.floor((PLAY.cum[PLAY.i - 1] / PLAY.total) * 10))) snapshot();
       const a = PLAY.cursor || moveAt(PLAY.i - 1), b = moveAt(PLAY.i), oi = PLAY.opOf[PLAY.i];
       if (!b.r) { N.cutMoveExact(hm, S.result.plan.ops[oi].tool, a, b, oi); touch(a, b, oi); }
       PLAY.cursor = null;
@@ -782,7 +789,8 @@ export function mountApp(root, host, engine) {
       if (!b.r) { N.cutMoveExact(hm, S.result.plan.ops[oi].tool, a, m, oi); touch(a, m, oi); }
       PLAY.cursor = m;
     }
-    return [j0, j1];
+    PLAY.cutT = t;
+    return [j0, j1, true];
   }
 
   function placeTool(t) {
@@ -795,18 +803,34 @@ export function mountApp(root, host, engine) {
       viewer.setTool(op.tool, op.zTop - op.zBottom);
       PLAY.toolOp = oi;
     }
-    const p = PLAY.cursor || moveAt(Math.max(0, PLAY.i - 1));
-    viewer.moveTool(p.x, p.y, p.z);
+    // Where the tool is at t (the stock may still be catching up)
+    const a = moveAt(Math.max(0, i - 1)), b = moveAt(i), t0 = i > 0 ? PLAY.cum[i - 1] : 0;
+    const f = i > 0 ? Math.max(0, Math.min(1, (t - t0) / (PLAY.cum[i] - t0 || 1))) : 1;
+    viewer.moveTool(a.x + (b.x - a.x) * f, a.y + (b.y - a.y) * f, a.z + (b.z - a.z) * f);
   }
 
-  let lastFrame = 0, lastBar = 0;
+  let lastFrame = 0, lastBar = 0, lastStock = 0;
+  const dirty = [Infinity, -1];
+  // ms of cutting a frame: little while dragging (it stays smooth), a lot
+  // once let go (it catches up about as fast as cutting it all at once)
+  const CUT_BUDGET = { drag: 12, catchUp: 250 };
   function frame(now) {
     const dt = lastFrame ? Math.min(0.1, (now - lastFrame) / 1000) : 0;
     lastFrame = now;
-    if (!PLAY.playing || !PLAY.cum) return;
-    PLAY.t = Math.min(PLAY.total, PLAY.t + dt * PLAY.speed * PLAY.rate);
-    const [j0, j1] = advance(PLAY.t);
-    viewer.refreshStock(j0, j1, PLAY.colors);
+    if (!PLAY.cum) return;
+    if (PLAY.playing) { PLAY.t = Math.min(PLAY.total, PLAY.t + dt * PLAY.speed * PLAY.rate); PLAY.goal = PLAY.t; }
+    if (PLAY.goal == null) return;
+    // The stock catches up a slice a frame, so the view never freezes
+    const [j0, j1, done] = advance(PLAY.goal, performance.now() + (PLAY.dragging || PLAY.playing ? CUT_BUDGET.drag : CUT_BUDGET.catchUp));
+    // Redrawing the stock costs as much as cutting: while catching up, a
+    // few times a second; playing, every frame
+    dirty[0] = Math.min(dirty[0], j0); dirty[1] = Math.max(dirty[1], j1);
+    if (done || PLAY.playing || now - lastStock > 250) {
+      viewer.refreshStock(dirty[0], dirty[1], PLAY.colors);
+      dirty[0] = Infinity; dirty[1] = -1; lastStock = now;
+    }
+    if (done) PLAY.goal = null;
+    if (!PLAY.playing) return;
     placeTool(PLAY.t);
     if (PLAY.t >= PLAY.total) { PLAY.playing = false; updatePlaybar(); }
     else if (now - lastBar > 200) { lastBar = now; updatePlaybar(); }
@@ -822,7 +846,8 @@ export function mountApp(root, host, engine) {
 
   function seek(t) {
     t = Math.max(0, Math.min(PLAY.total, t));
-    if (t < PLAY.t) {
+    // Going back from where the stock is cut to: from the nearest snapshot
+    if (t < (PLAY.cutT ?? 0)) {
       const sn = PLAY.snaps.filter((x) => PLAY.cum[x.i - 1] <= t).sort((a, b) => b.i - a.i)[0];
       if (sn) { SNAP_KEYS.forEach((k, q) => PLAY.hm[k].set(sn.data[q])); PLAY.i = sn.i; }
       else {
@@ -830,12 +855,11 @@ export function mountApp(root, host, engine) {
         PLAY.i = 1;
       }
       PLAY.cursor = null;
-      advance(t);
+      PLAY.cutT = PLAY.i > 1 ? PLAY.cum[PLAY.i - 1] : 0;
       viewer.refreshStock(0, PLAY.hm.ny - 1, PLAY.colors);
-    } else {
-      const [j0, j1] = advance(t);
-      viewer.refreshStock(j0, j1, PLAY.colors);
     }
+    // The tool and the bar go there now; the stock follows a slice a frame
+    PLAY.goal = t;
     PLAY.t = t;
     placeTool(t);
     updatePlaybar();
@@ -870,8 +894,8 @@ export function mountApp(root, host, engine) {
   function runChecks(p) {
     setTimeout(() => {
       if (S.result?.plan !== p) return;
-      const ops = p.ops.map((o) => ({ ...o, moves: o.track ? Array.from({ length: o.track.length / 4 }, (_, i) => ({ x: o.track[i * 4], y: o.track[i * 4 + 1], z: o.track[i * 4 + 2], r: o.track[i * 4 + 3] === 0, f: o.track[i * 4 + 3] })) : null }));
-      const { collisions } = N.simulate({ ...p, ops }, N.HeightMap.cellFor(p.stock, 300 * 300));
+      // Simulated in the engine's worker with the toolpaths, off this page
+      const collisions = S.result?.collisions || [];
       const items = [];
       items.push(collisions.length
         ? { state: 'bad', text: `${collisions.length} fast move${collisions.length > 1 ? 's go' : ' goes'} into the material (${[...new Set(collisions.map((c) => p.ops.find((o) => o.id === c.op)?.label))].join(', ')}).` }
@@ -955,6 +979,7 @@ export function mountApp(root, host, engine) {
     if (!bar || !PLAY.cum) return;
     const was = PLAY.playing;
     PLAY.playing = false;
+    PLAY.dragging = true;
     // The bar is redrawn on every seek, so measure the one on screen now;
     // at most one seek per frame while dragging
     const at = (x) => { const r = root.querySelector('[data-scrub]').getBoundingClientRect(); if (r.width > 0) seek(((x - r.left) / r.width) * PLAY.total); };
@@ -964,7 +989,7 @@ export function mountApp(root, host, engine) {
       if (pending === null) requestAnimationFrame(() => { const x = pending; pending = null; at(x); });
       pending = ev.clientX;
     };
-    const up = () => { window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', up); PLAY.playing = was && PLAY.t < PLAY.total; lastFrame = 0; updatePlaybar(); };
+    const up = () => { PLAY.dragging = false; window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', up); PLAY.playing = was && PLAY.t < PLAY.total; lastFrame = 0; updatePlaybar(); };
     window.addEventListener('pointermove', move);
     window.addEventListener('pointerup', up);
   });
