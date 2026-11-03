@@ -539,7 +539,7 @@ export function mountApp(root, host, engine) {
     const edges = c?.edges || 'all';
     const sub = !on ? 'Off: edges stay sharp.' : S.plan.ops.some((o) => o.kind === 'chamfer') ? 'A V-bit runs along each top edge of a flat face, after the cut-out.' : 'No edge can be chamfered: see the notes below.';
     return `<div class="ncc-card" style="margin-top: 10px">
-        <div class="ncc-row"><div class="ncc-row-text"><div class="ncc-row-title">Chamfer the edges</div><div class="ncc-row-sub">${esc(sub)}</div></div><button class="ncc-toggle" type="button" role="switch" aria-checked="${on}" aria-label="Chamfer the edges" data-toggle="chamfer"></button></div>
+        <div class="ncc-row"><div class="ncc-row-text"><div class="ncc-row-title">Add Chamfer to top surfaces</div><div class="ncc-row-sub">${esc(sub)}</div></div><button class="ncc-toggle" type="button" role="switch" aria-checked="${on}" aria-label="Add Chamfer to top surfaces" data-toggle="chamfer"></button></div>
         ${on ? `<div class="ncc-row"><span class="ncc-row-title" style="font-weight: 500">Width</span><div class="ncc-stepper"><button type="button" data-chamfer="-1" aria-label="Narrower chamfer" ${size <= CHAMFER.min + 1e-6 ? 'disabled' : ''}>\u2212</button><span class="ncc-mono">${L(size, S.units === 'in' ? 3 : 1)}</span><button type="button" data-chamfer="1" aria-label="Wider chamfer" ${size >= CHAMFER.max - 1e-6 ? 'disabled' : ''}>+</button></div></div>
         <div class="ncc-seg" role="group" aria-label="Which edges">${Object.entries({ all: 'All edges', outside: 'Outside', inside: 'Pockets & holes' }).map(([k, v]) => `<button type="button" class="${edges === k ? 'sel' : ''}" data-chamfer-edges="${k}">${v}</button>`).join('')}</div>` : ''}
       </div>`;

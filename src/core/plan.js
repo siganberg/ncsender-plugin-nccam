@@ -486,7 +486,7 @@ export function plan(mesh, tools, job, limits = {}) {
     const picked = tools.find((t) => t.id === job.toolOverride?.chamfer && vbits.includes(t));
     // A 90° bit makes the usual 45° chamfer; else the angle nearest to it
     const tool = picked || vbits.filter((t) => vFits(t, w)).sort((a, b) => Math.abs(a.angle - 90) - Math.abs(b.angle - 90) || a.diameter - b.diameter)[0];
-    if (!tool) warnings.push({ kind: 'chamfer', text: vbits.length ? `No V-bit in your Tool Library is wide enough for a ${L(w)} chamfer.` : 'Chamfering the edges needs a V-bit in your Tool Library.' });
+    if (!tool) warnings.push({ kind: 'chamfer', text: vbits.length ? `No V-bit in your Tool Library is wide enough for a ${L(w)} chamfer.` : 'Adding a chamfer to top surfaces needs a V-bit in your Tool Library.' });
     else {
       const depth = (w + CHAMFER_OUT) / Math.tan(half(tool));
       // Flat faces: every floor in 2.5D; in 3D only real ones, not a mesh's stray flat triangles
@@ -502,7 +502,7 @@ export function plan(mesh, tools, job, limits = {}) {
       }
       if (skipped) warnings.push({ kind: 'chamfer', text: `Some edges are too low to chamfer ${L(w)} without cutting the tabs or the spoilboard.` });
       if (!passes.length) warnings.push({ kind: 'chamfer', text: `No ${chamferArea > 0 ? 'other ' : ''}edge can take a ${L(w)} chamfer with ${tool.name}.` });
-      else add({ id: 'chamfer', kind: 'chamfer', label: 'Chamfer the edges', tool: take(tool), zTop: analysis.top, zBottom: Math.min(...passes.map((l) => l.z - l.depth)), region: footprint, levels: passes, show: passes.map((l) => ({ z: l.z, loops: l.loops })), size: w, detail: `${L(w)} wide \u00b7 ${Math.round(tool.angle)}\u00b0 bit \u00b7 ${{ all: 'all edges', outside: 'outside edges', inside: 'pockets and holes' }[which]}` });
+      else add({ id: 'chamfer', kind: 'chamfer', label: 'Add Chamfer to top surfaces', tool: take(tool), zTop: analysis.top, zBottom: Math.min(...passes.map((l) => l.z - l.depth)), region: footprint, levels: passes, show: passes.map((l) => ({ z: l.z, loops: l.loops })), size: w, detail: `${L(w)} wide \u00b7 ${Math.round(tool.angle)}\u00b0 bit \u00b7 ${{ all: 'all edges', outside: 'outside edges', inside: 'pockets and holes' }[which]}` });
     }
   }
 

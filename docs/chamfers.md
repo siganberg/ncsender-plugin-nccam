@@ -10,7 +10,7 @@ Status: both are in.
   half angle is within 1.5° of the chamfer's; none: a note, left square.
   The "Cut curved faces in 3D" switch and the sloped warning only count
   sloped faces besides the chamfers.
-- **"Chamfer the edges"**: every top edge of a flat face, on 2.5D parts and
+- **"Add Chamfer to top surfaces"**: every top edge of a flat face, on 2.5D parts and
   on the flat faces (25 mm² or more) of parts cut in 3D. Edges the model
   already chamfers are left alone.
 - Both run after the cut-out, the tip 0.25 mm outside the edge on a mitred
@@ -124,7 +124,7 @@ For a V-bit with half angle `θ` and a chamfer of width `w` and height `h`:
 - **Operations:**
   - "Cut the chamfers" (found in the model): count and size, e.g. "4 edges ·
     2 mm × 45°".
-  - "Chamfer the edges" (the option): a size field and the edge choice.
+  - "Add Chamfer to top surfaces" (the option): a size field and the edge choice.
   - Each with a V-bit picker that lists the bits whose angle fits.
 - **Preview:** a colour for chamfer ops; the cone is already drawn.
 - **Warnings:**
@@ -149,6 +149,6 @@ For a V-bit with half angle `θ` and a chamfer of width `w` and height `h`:
 ## Order of work
 
 1. V angle from the Tool Library (and the simulator using it).
-2. "Chamfer the edges" option with outside edges, then pocket and hole rims.
+2. "Add Chamfer to top surfaces" option with outside edges, then pocket and hole rims.
 3. Detecting chamfers in STEP files (B-rep faces), then in mesh files.
 4. Countersink plunges, then sharp inside corners.
