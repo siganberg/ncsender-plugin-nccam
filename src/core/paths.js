@@ -270,6 +270,39 @@ function verticalWalls(path, region, above, r, fd, zFrom, z, entry) {
   }
 }
 
+// Chamfers: a V-bit along each edge's loop (the tip a little outside it),
+// down to the chamfer's depth in passes no deeper than a step-down, only
+// where nothing else is within reach of the cone (outside `bad`).
+function chamfer(path, levels, fd) {
+  for (const lv of levels) {
+    for (const pts of nearestFirst(lv.loops.map((l) => [l]), path.at).map((g) => g[0])) {
+      const loop = new Loop(pts.slice().reverse()); // climb, as the cut-out
+      const n = Math.max(8, Math.ceil(loop.length / 0.25));
+      const flag = Array.from({ length: n }, (_, i) => !inside(loop.at((i / n) * loop.length), lv.bad));
+      if (!flag.some(Boolean)) continue;
+      const all = flag.every(Boolean), first = all ? 0 : flag.indexOf(false);
+      for (let k = 0; k < n; k++) {
+        const i = (first + k) % n;
+        if (!flag[i] || (!all && flag[(i - 1 + n) % n])) continue;
+        let j = i;
+        while (j - i < n - 1 && flag[(j + 1) % n]) j++;
+        const s0 = (i / n) * loop.length, s1 = all ? s0 + loop.length : (j / n) * loop.length;
+        if (!all && s1 - s0 < 0.5) continue; // a stretch too short to matter
+        const [x, y] = loop.at(s0);
+        for (const z of depthLevels(lv.z, lv.z - lv.depth, fd.stepdown)) {
+          if (!all) path.goTo(x, y, lv.z);
+          else if (!path.at || Math.hypot(path.at.x - x, path.at.y - y) > 1e-6) path.goTo(x, y, lv.z);
+          path.feed(x, y, z, fd.plunge);
+          walk(path, loop, s0, s1, () => z, fd.feed);
+          if (!all) path.retract();
+        }
+        path.retract();
+        if (all) break;
+      }
+    }
+  }
+}
+
 // Only the stretches of the wall the bigger tool couldn't reach.
 function corners(path, region, r, bigR, fd, zTop, zBottom) {
   const left = C.cleanLoops(C.difference(region, C.offset(C.offset(region, -bigR), bigR)), 0.01);
@@ -803,6 +836,7 @@ export function toolpaths(p) {
       case 'finish3d': surface3d(path, op.surface, op.tool, fd, op.ridge, 0, op.left ?? LAYER_LEFT, op.steep !== false); break;
       case 'drill': drill(path, op.centers, fd, zTop, op.zBottom, op.tool.diameter); break;
       case 'cutout': cutout(path, op.region, r, fd, zTop, op.zBottom, p.job, allowance); break;
+      case 'chamfer': chamfer(path, op.levels, fd); break;
     }
     op.moves = path.moves;
   }

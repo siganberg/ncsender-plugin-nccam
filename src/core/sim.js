@@ -32,7 +32,7 @@ export function toolStamp(tool, cell) {
     let dz = 0;
     if (tool.kind === 'ball') dz = r - Math.sqrt(Math.max(0, r * r - dd * dd));
     else if (tool.kind === 'vbit' || tool.kind === 'chamfer' || tool.kind === 'drill') {
-      const half = ((tool.angle || (tool.kind === 'drill' ? 118 : 60)) * Math.PI) / 360;
+      const half = ((tool.angle || (tool.kind === 'drill' ? 118 : 90)) * Math.PI) / 360;
       dz = dd / Math.tan(half);
     }
     out.push(i, j, dz, d);
@@ -91,7 +91,7 @@ export function cutMoveExact(hm, tool, a, b, opIndex) {
   const r = tool.diameter / 2, cell = hm.cell, rc = r / cell;
   const tip = tool.kind === 'ball' ? (d) => r - Math.sqrt(Math.max(0, r * r - d * d))
     : (tool.kind === 'vbit' || tool.kind === 'chamfer' || tool.kind === 'drill')
-      ? ((t) => (d) => d / t)(Math.tan(((tool.angle || (tool.kind === 'drill' ? 118 : 60)) * Math.PI) / 360))
+      ? ((t) => (d) => d / t)(Math.tan(((tool.angle || (tool.kind === 'drill' ? 118 : 90)) * Math.PI) / 360))
       : () => 0;
   const flat = !tool.kind || tool.kind === 'flat' || tool.kind === 'surfacing';
   const { h, sx, sy, wx, wy, gap, deep, nx, ny } = hm;

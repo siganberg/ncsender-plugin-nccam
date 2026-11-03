@@ -1,6 +1,18 @@
 # Chamfers: design
 
-Status: planned, nothing built yet.
+Status: "Chamfer the edges" (feature 2) and the V angle are in; finding the
+model's own chamfers (feature 1) is not. As built:
+
+- The chamfer runs after the cut-out (in its slot, and in emptied pockets),
+  so edges on lower steps don't have stock standing over them.
+- The tip runs 0.25 mm outside the edge on a mitred path, so outside corners
+  stay sharp.
+- Skipped where the cone would reach anything else: a wall above (the bit's
+  full width from it), a ledge below the edge within the cone, the stock
+  past the cut-out's slot. An outside edge whose tip would reach the tabs or
+  the spoilboard is skipped with a note.
+- Width 0.5–6 mm in 0.5 mm steps (1 mm by default); the bit's angle sets the
+  chamfer's angle. A 90° bit is preferred.
 
 Two features with one toolpath:
 

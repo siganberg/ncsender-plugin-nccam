@@ -72,7 +72,19 @@ export function normalizeTools(list) {
       kind: toolKind(t), diameter: Number(t.diameter),
       fluteLength: Number(t.dimensions?.flute_length) || null,
       flutes: Number(t.metadata?.flutes) || 2,
+      ...(/^(vbit|chamfer)$/.test(toolKind(t)) ? { angle: vAngle(t) } : {}),
     }));
+}
+
+// A V-bit's included angle. The Tool Library keeps half of it in
+// dimensions.taper_angle (the Fusion 360 importer writes 30 for a 60° bit);
+// else the name says it ("60 degree", "90 Deg", "60°"); else 90°.
+export function vAngle(t) {
+  const half = Number(t.dimensions?.taper_angle);
+  if (half > 0 && half < 90) return half * 2;
+  const m = String(t.name || '').match(/(\d{2,3}(?:\.\d+)?)\s*(?:°|º|deg\b|degrees?\b)/i);
+  const a = m ? Number(m[1]) : 0;
+  return a > 0 && a < 180 ? a : 90;
 }
 
 export function feeds(tool, material, finish, limits = {}) {

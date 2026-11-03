@@ -11,6 +11,9 @@ const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '
 const clock = (sec) => { const s = Math.max(0, Math.round(sec)); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`; };
 
 const svg = (body, size = 18, extra = '') => `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" ${extra}>${body}</svg>`;
+// Chamfer width: default and range, in mm
+const CHAMFER = { size: 1, min: 0.5, max: 6, step: 0.5 };
+
 const ICONS = {
   close: svg('<path d="M6 6l12 12M18 6L6 18"/>'),
   next: svg('<path d="M9 6l6 6-6 6"/>', 16, 'stroke-width="2.4"'),
@@ -32,6 +35,7 @@ const ICONS = {
   cutout: svg('<rect x="3" y="5" width="18" height="14" rx="2" stroke-dasharray="3 2.5"/>'),
   rough3d: svg('<path d="M3 19h4v-4h3v-4h4v4h3v4h4"/>'),
   finish3d: svg('<path d="M3 18c3 0 4-9 9-9s6 9 9 9"/>'),
+  chamfer: svg('<path d="M4 20V9l5-5h11v16z"/><path d="M9 4v5H4" stroke-dasharray="2 2"/>'),
   rest3d: svg('<path d="M3 19h4v-4h3v-4h4v4h3v4h4"/><circle cx="12" cy="17" r="1.5"/>'),
 };
 
@@ -172,7 +176,7 @@ export function mountApp(root, host, engine) {
     S.analysis = r.analysis;
     const keep = S.job;
     S.job = N.defaultJob(r.analysis);
-    if (keep) Object.assign(S.job, { material: keep.material, finish: keep.finish, zero: keep.zero, tabs: keep.tabs, stock: { ...S.job.stock, fit: keep.stock.fit, margin: keep.stock.margin, extraTop: keep.stock.extraTop } });
+    if (keep) Object.assign(S.job, { material: keep.material, finish: keep.finish, zero: keep.zero, tabs: keep.tabs, chamfer: keep.chamfer, stock: { ...S.job.stock, fit: keep.stock.fit, margin: keep.stock.margin, extraTop: keep.stock.extraTop } });
     S.loading = '';
     return replan();
   }
@@ -375,7 +379,7 @@ export function mountApp(root, host, engine) {
   function modelOverlay() {
     if (!S.plan) return '';
     const kinds = [...new Set(S.plan.ops.filter((o) => o.kind !== 'face' && o.kind !== 'corners' && o.kind !== 'finish3d' && o.kind !== 'rest3d').map((o) => o.kind))];
-    const label = { pocket: 'Pockets', hole: 'Holes', drill: 'Holes', step: 'Steps', cutout: 'Outline', rough3d: '3D surface' };
+    const label = { pocket: 'Pockets', hole: 'Holes', drill: 'Holes', step: 'Steps', cutout: 'Outline', rough3d: '3D surface', chamfer: 'Chamfers' };
     return `<div class="ncc-overlay tr">${kinds.map((k) => `<span class="ncc-chip"><span class="ncc-swatch" style="background: ${OP_COLORS[k]}"></span>${label[k]}</span>`).join('')}</div>
       <div class="ncc-overlay bl"><span class="ncc-chip">Drag to rotate</span><span class="ncc-chip">Scroll to zoom</span><span class="ncc-chip">Click a face to put it on top</span></div>`;
   }
@@ -510,9 +514,23 @@ export function mountApp(root, host, engine) {
     // Landscape: list | drawing over Finish + Tools. Portrait: the drawing
     // stays on top and only the list (Finish + Tools at its end) scrolls.
     return `<div class="ncc-plan">
-        <div class="ncc-plan-list" data-keep-scroll="ops">${threeD()}<div class="ncc-ops">${rows}</div>${planHints(false)}<div class="ncc-plan-pair-in">${pair}</div></div>
+        <div class="ncc-plan-list" data-keep-scroll="ops">${threeD()}<div class="ncc-ops">${rows}</div>${chamferCard()}${planHints(false)}<div class="ncc-plan-pair-in">${pair}</div></div>
         <div class="ncc-card ncc-viewcard ncc-plan-view"><div data-viewer></div></div>
         <div class="ncc-plan-pair">${pair}</div>
+      </div>`;
+  }
+
+  // Chamfer the top edges: an option for 2.5D parts, cut with a V-bit
+  function chamferCard() {
+    if (S.plan.did3d) return '';
+    const c = S.job.chamfer, on = c?.size > 0;
+    const size = on ? c.size : CHAMFER.size;
+    const edges = c?.edges || 'all';
+    const sub = !on ? 'Off: edges stay sharp.' : S.plan.ops.some((o) => o.kind === 'chamfer') ? 'A V-bit runs along each edge after the cut-out.' : 'No edge can be chamfered: see the notes below.';
+    return `<div class="ncc-card" style="margin-top: 10px">
+        <div class="ncc-row"><div class="ncc-row-text"><div class="ncc-row-title">Chamfer the edges</div><div class="ncc-row-sub">${esc(sub)}</div></div><button class="ncc-toggle" type="button" role="switch" aria-checked="${on}" aria-label="Chamfer the edges" data-toggle="chamfer"></button></div>
+        ${on ? `<div class="ncc-row"><span class="ncc-row-title" style="font-weight: 500">Width</span><div class="ncc-stepper"><button type="button" data-chamfer="-1" aria-label="Narrower chamfer" ${size <= CHAMFER.min + 1e-6 ? 'disabled' : ''}>\u2212</button><span class="ncc-mono">${L(size, S.units === 'in' ? 3 : 1)}</span><button type="button" data-chamfer="1" aria-label="Wider chamfer" ${size >= CHAMFER.max - 1e-6 ? 'disabled' : ''}>+</button></div></div>
+        <div class="ncc-seg" role="group" aria-label="Which edges">${Object.entries({ all: 'All edges', outside: 'Outside', inside: 'Pockets & holes' }).map(([k, v]) => `<button type="button" class="${edges === k ? 'sel' : ''}" data-chamfer-edges="${k}">${v}</button>`).join('')}</div>` : ''}
       </div>`;
   }
 
@@ -545,7 +563,7 @@ export function mountApp(root, host, engine) {
   }
 
   function toolChoices(o) {
-    const kinds = o.kind === 'drill' ? ['drill'] : o.kind === 'face' ? ['surfacing', 'flat'] : o.kind === 'finish3d' ? ['ball', 'flat'] : ['flat'];
+    const kinds = o.kind === 'drill' ? ['drill'] : o.kind === 'face' ? ['surfacing', 'flat'] : o.kind === 'finish3d' ? ['ball', 'flat'] : o.kind === 'chamfer' ? ['vbit', 'chamfer'] : ['flat'];
     const list = S.tools.filter((t) => kinds.includes(t.kind)).sort((a, b) => b.diameter - a.diameter);
     return list.some((t) => t.id === o.tool.id) ? list : [o.tool, ...list];
   }
@@ -859,6 +877,13 @@ export function mountApp(root, host, engine) {
     if (d.scale === 'reset') return rescale([1, 1, 1]);
     if (d.scale === 'inch') return rescale([N.units.INCH, N.units.INCH, N.units.INCH]);
     if (d.toggle === 'tabs') { S.job.tabs.enabled = !S.job.tabs.enabled; return changed(); }
+    if (d.toggle === 'chamfer') {
+      const c = S.job.chamfer || {};
+      S.job.chamfer = c.size > 0 ? { ...c, last: c.size, size: 0 } : { edges: 'all', ...c, size: c.last || CHAMFER.size };
+      return changed();
+    }
+    if (d.chamfer) { const c = S.job.chamfer; c.size = Math.max(CHAMFER.min, Math.min(CHAMFER.max, Math.round((c.size + +d.chamfer * CHAMFER.step) / CHAMFER.step) * CHAMFER.step)); c.last = c.size; return changed(); }
+    if (d.chamferEdges) { S.job.chamfer.edges = d.chamferEdges; return changed(); }
     if (d.toggle === '3d') { S.job.surface3d = !S.plan?.mode3d; S.job.disabled = {}; S.job.toolOverride = {}; return changed(); }
     if (d.op) { S.job.disabled[d.op] = !S.job.disabled[d.op]; return changed(); }
     if (d.speed) { PLAY.speed = +d.speed; return updatePlaybar(); }

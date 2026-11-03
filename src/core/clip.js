@@ -84,6 +84,17 @@ function offsetOnce(paths, delta, arc) {
   return fromClipper(out);
 }
 
+// Grown with sharp corners (mitred, up to 4× the distance out): where a
+// V-bit's tip runs outside an edge, so the chamfer keeps the part's corners.
+export function offsetMiter(paths, delta) {
+  if (!paths.length) return [];
+  const co = new ClipperLib.ClipperOffset(4, ARC_TOLERANCE);
+  co.AddPaths(toClipper(paths), ClipperLib.JoinType.jtMiter, ClipperLib.EndType.etClosedPolygon);
+  const out = new ClipperLib.Paths();
+  co.Execute(out, delta * SCALE);
+  return fromClipper(out);
+}
+
 export function loopArea(loop) {
   let a = 0;
   for (let i = 0, j = loop.length - 1; i < loop.length; j = i++) a += (loop[j][0] + loop[i][0]) * (loop[j][1] - loop[i][1]);

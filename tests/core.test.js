@@ -680,3 +680,83 @@ test('shrinking past a hairline needle in an outline leaves no spike', async () 
   const xs = out.flat().map((q) => q[0]);
   assert.ok(Math.max(...xs) < 5.352 - 6.37 + 0.3, `furthest point at x ${Math.max(...xs)}`);
 });
+
+test('a V-bit\'s angle comes from taper_angle (half of it), else its name', () => {
+  const t = N.normalizeTools([
+    { id: 1, name: 'V', type: 'v-bit', diameter: 6.35, dimensions: { taper_angle: 30 } },
+    { id: 2, name: 'SpeTool 90 Deg V Bit', type: 'v-bit', diameter: 6.35 },
+    { id: 3, name: 'Whiteside 60 degree Vee', type: 'v-bit', diameter: 6.35 },
+    { id: 4, name: 'Engraver', type: 'v-bit', diameter: 3 },
+    { id: 5, name: 'End mill', type: 'flat', diameter: 6 },
+  ]);
+  assert.deepEqual(t.map((x) => x.angle), [60, 90, 60, 90, undefined]);
+});
+
+// Chamfer cells: how deep the cut goes below the part's top, against what a
+// chamfer `w` wide allows at that distance from the edge.
+function chamferCheck(mesh, p, w) {
+  const op = p.ops.find((o) => o.kind === 'chamfer');
+  const tan = Math.tan((op.tool.angle * Math.PI) / 360);
+  const { hm, collisions } = N.simulate(p, 0.1);
+  const ph = N.partHeights(mesh, hm);
+  const low = (i) => Math.min(ph[i], ...[i - 1, i + 1, i - hm.nx, i + hm.nx, i - hm.nx - 1, i - hm.nx + 1, i + hm.nx - 1, i + hm.nx + 1].filter((k) => k >= 0 && k < ph.length).map((k) => ph[k]));
+  const edge = (i) => {
+    const x = i % hm.nx, y = Math.floor(i / hm.nx);
+    let best = 99;
+    for (let d = 1; d < 60 && d * hm.cell < best; d++) for (let dy = -d; dy <= d; dy++) for (let dx = -d; dx <= d; dx++) {
+      if (Math.max(Math.abs(dx), Math.abs(dy)) !== d) continue;
+      const k = (y + dy) * hm.nx + x + dx;
+      if (k >= 0 && k < ph.length && ph[k] < ph[i] - 0.5) best = Math.min(best, Math.hypot(dx, dy) * hm.cell);
+    }
+    return best - hm.cell / 2;
+  };
+  let over = 0, deepest = 0;
+  for (let i = 0; i < ph.length; i++) {
+    if (ph[i] === -Infinity || low(i) === -Infinity) continue;
+    const d = Math.min(ph[i], low(i)) - hm.h[i];
+    if (d <= 0.05) continue;
+    deepest = Math.max(deepest, d);
+    if (d > Math.max(0, w - edge(i) + 0.15) / tan + 0.1) over++;
+  }
+  return { collisions: collisions.length, over, deepest, op };
+}
+
+const VLIB = N.normalizeTools([...LIBRARY, { id: 9, toolId: 9, name: '90 Deg V-bit', type: 'v-bit', diameter: 6.35, dimensions: { taper_angle: 45, flute_length: 3.175 } }]);
+
+test('chamfer the edges: a 90° V-bit after the cut-out, 1 mm on every top edge', async () => {
+  const { mesh, p } = await make('stepped.step', (j) => ({ ...j, chamfer: { size: 1, edges: 'all' } }), VLIB);
+  const ops = p.ops.map((o) => o.kind);
+  assert.equal(ops.at(-1), 'chamfer');
+  assert.ok(ops.indexOf('cutout') < ops.indexOf('chamfer'));
+  const r = chamferCheck(mesh, p, 1);
+  assert.equal(r.op.tool.name, '90 Deg V-bit');
+  assert.equal(r.collisions, 0);
+  assert.equal(r.over, 0);
+  assert.ok(r.deepest > 0.8 && r.deepest < 1.1, `deepest ${r.deepest}`);
+  // Off by default
+  const { p: off } = await make('stepped.step', (j) => j, VLIB);
+  assert.ok(!off.ops.some((o) => o.kind === 'chamfer'));
+});
+
+test('chamfer only the outside, or only pockets and holes', async () => {
+  const levels = async (edges) => (await make('stepped.step', (j) => ({ ...j, chamfer: { size: 1, edges } }), VLIB)).p.ops.find((o) => o.kind === 'chamfer').levels.reduce((n, l) => n + l.loops.length, 0);
+  const [all, outside, inside] = [await levels('all'), await levels('outside'), await levels('inside')];
+  assert.ok(outside > 0 && inside > 0);
+  assert.equal(outside + inside, all);
+});
+
+test('a chamfer that would reach the tabs skips the outside edge and says so', async () => {
+  // 2 mm with a 60° bit goes 3.9 mm down a 5 mm plate: the tabs are 2 mm high
+  const { mesh, p } = await make('plate.step', (j) => ({ ...j, chamfer: { size: 2, edges: 'all' } }));
+  assert.ok(p.warnings.some((w) => w.kind === 'chamfer' && /too low/.test(w.text)));
+  const r = chamferCheck(mesh, p, 2);
+  assert.equal(r.op.tool.angle, 60);
+  assert.equal(r.collisions, 0);
+  assert.equal(r.over, 0);
+});
+
+test('no V-bit: chamfering says so and adds nothing', async () => {
+  const { p } = await make('stepped.step', (j) => ({ ...j, chamfer: { size: 1 } }), tools.filter((t) => t.kind !== 'vbit'));
+  assert.ok(!p.ops.some((o) => o.kind === 'chamfer'));
+  assert.ok(p.warnings.some((w) => w.kind === 'chamfer' && /needs a V-bit/.test(w.text)));
+});

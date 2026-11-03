@@ -15,6 +15,7 @@ import { len, num } from './units.js';
 
 const EPS = 0.01;
 const TINY = 0.05; // mm²: smaller leftovers are not worth a tool
+const CHAMFER_OUT = 0.25; // mm: a chamfering V-bit's tip runs this far outside the edge
 // 3D: a part more than SHARE_3D sloped or curved (share of its surface) is
 // roughed in layers and finished with a ball end mill
 const ALLOW_3D = 0.3; // mm left on the surface for the finishing pass
@@ -370,6 +371,63 @@ export function plan(mesh, tools, job, limits = {}) {
     else warnings.push({ kind: 'notool', text: `No end mill is long enough to cut out the part (${L(depth)}).` });
   }
 
+  // 6. Chamfer the top edges (an option): a V-bit along each one, after the
+  // cut-out, so it runs in the cut-out's slot and in emptied pockets.
+  if (job.chamfer?.size > 0) chamferEdges();
+
+  function chamferEdges() {
+    const w = job.chamfer.size, which = job.chamfer.edges || 'all';
+    if (did3d) { warnings.push({ kind: 'chamfer', text: 'Edges aren\u2019t chamfered on parts cut in 3D.' }); return; }
+    const vbits = tools.filter((t) => (t.kind === 'vbit' || t.kind === 'chamfer') && t.angle > 0 && t.angle < 180);
+    // How deep the tip goes for this chamfer (it runs CHAMFER_OUT outside the
+    // edge, where the cone is stronger) and the cone's width there
+    const tipDepth = (t) => (w + CHAMFER_OUT) / Math.tan((t.angle * Math.PI) / 360);
+    const fitsW = (t) => t.diameter / 2 >= w + CHAMFER_OUT + 0.1 && (!t.fluteLength || t.fluteLength >= tipDepth(t) - 1e-6);
+    const picked = tools.find((t) => t.id === job.toolOverride?.chamfer && vbits.includes(t));
+    // A 90° bit makes the usual 45° chamfer; else the angle nearest to it
+    const tool = picked || vbits.filter(fitsW).sort((a, b) => Math.abs(a.angle - 90) - Math.abs(b.angle - 90) || a.diameter - b.diameter)[0];
+    if (!tool) {
+      warnings.push({ kind: 'chamfer', text: vbits.length ? `No V-bit in your Tool Library is wide enough for a ${L(w)} chamfer.` : 'Chamfering the edges needs a V-bit in your Tool Library.' });
+      return;
+    }
+    const depth = tipDepth(tool), R = w + CHAMFER_OUT, tr = tool.diameter / 2;
+    // After the cut-out, the stock beyond its slot still stands
+    const cut = ops.find((o) => o.kind === 'cutout');
+    const slot = cut && !job.disabled?.cutout ? cut.tool.diameter : 0;
+    const standing = C.difference(rect(stock), C.offset(footprint, Math.max(0, slot - 0.05)));
+    const tabTop = job.tabs.enabled ? (job.tabs.height ?? tabDefaults(job.material).height) : 0;
+    const levels = [analysis.top, ...analysis.floors.filter((z) => z < analysis.top - EPS && z > EPS)];
+    const out = [];
+    let length = 0, skipped = 0;
+    for (const z of levels) {
+      const zTip = z - depth;
+      // The material whose top edge is at z, and what stands above it
+      const lo = C.cleanLoops(C.unionEvenOdd(slice(mesh, z - EPS)), TINY);
+      const hi = z < analysis.top - EPS ? section(z + EPS) : [];
+      if (!lo.length) continue;
+      // The cone must reach nothing but the chamfer: no wall above (the bit's
+      // full width from it), no ledge below the edge sticking out within the
+      // cone, nothing under the tip
+      if (zTip < -job.throughDepth + 0.1) { skipped++; continue; } // into the spoilboard
+      const under = C.cleanLoops(C.difference(section(Math.max(zTip, EPS) + EPS), C.offset(lo, 0.01)), TINY);
+      const bad = C.union([...C.offset(hi, tr + 0.1), ...C.offset(standing, tr + 0.1), ...C.offset(under, R + 0.1)]);
+      const loops = [];
+      for (const region of C.regions(C.offsetMiter(lo, CHAMFER_OUT))) {
+        const [outer, ...holes] = region;
+        // Under the tip: a hole or the cut-out's slot must go deeper than it
+        const outerOk = zTip > Math.max(EPS, tabTop + 0.2) || (zTip > -job.throughDepth + 0.2 && !job.tabs.enabled);
+        if (which !== 'inside') { if (outerOk) loops.push(outer); else skipped++; }
+        if (which !== 'outside') for (const hole of holes) loops.push(hole);
+      }
+      if (!loops.length) continue;
+      out.push({ z, depth, loops, bad });
+      length += loops.reduce((sum, l) => sum + C.loopLength(l), 0);
+    }
+    if (skipped) warnings.push({ kind: 'chamfer', text: `Some edges are too low to chamfer ${L(w)} without cutting the tabs or the spoilboard.` });
+    if (!out.length) { warnings.push({ kind: 'chamfer', text: `No edge can take a ${L(w)} chamfer with ${tool.name}.` }); return; }
+    add({ id: 'chamfer', kind: 'chamfer', label: 'Chamfer the edges', tool: take(tool), zTop: analysis.top, zBottom: Math.min(...out.map((l) => l.z - l.depth)), region: footprint, levels: out, size: w, detail: `${L(w)} wide · ${Math.round(tool.angle)}\u00b0 bit · ${{ all: 'all edges', outside: 'outside edges', inside: 'pockets and holes' }[which]}` });
+  }
+
   // The same pocket more than once (five slots) is one operation over all
   // of them; each is still cut on its own, nearest first.
   const merged = [], into = new Map();
@@ -395,7 +453,7 @@ export function plan(mesh, tools, job, limits = {}) {
     const over = job.toolOverride?.[op.id];
     if (over) { const t = tools.find((x) => x.id === over); if (t) op.tool = t; }
     op.enabled = !job.disabled?.[op.id];
-    op.feeds = opFeeds(op.tool);
+    op.feeds = opFeeds(op.kind === 'chamfer' ? { ...op.tool, diameter: Math.min(op.tool.diameter, 2 * (op.size + CHAMFER_OUT)) } : op.tool);
     // The part's top on a grid fine enough for the finishing tool
     if (op.kind === 'finish3d') op.surface = surfaceGrid(mesh, stock, Math.min(0.2, op.tool.diameter / 16));
   }
@@ -407,8 +465,8 @@ export function plan(mesh, tools, job, limits = {}) {
 // goes next, to save tool changes. Corner clean-ups follow their pocket.
 function order(ops) {
   const first = ops.filter((o) => o.kind === 'face');
-  const last = ops.filter((o) => o.kind === 'cutout');
-  const mid = ops.filter((o) => o.kind !== 'face' && o.kind !== 'cutout');
+  const last = [...ops.filter((o) => o.kind === 'cutout'), ...ops.filter((o) => o.kind === 'chamfer')];
+  const mid = ops.filter((o) => o.kind !== 'face' && o.kind !== 'cutout' && o.kind !== 'chamfer');
   const area = (o) => o.region || (o.centers || []).map((c) => circleLoop(c));
   const needs = new Map(mid.map((o) => [o, mid.filter((u) => u !== o && (o.after === u.id || (u.zTop > o.zTop + EPS && C.area(C.intersection(area(o), area(u))) > TINY)))]));
   const done = new Set(), out = [...first];
