@@ -161,10 +161,12 @@ is often wanted bigger or smaller than the model.
   50, 200 %, and "fit the stock" once a stock size is set.
 - An STL that looks like inches (the whole part under about 10 units across)
   offers ×25.4 once, rather than guessing.
-- Scaling is a 3x3 diagonal on the mesh, applied in the engine (`transformMesh`
-  already takes a 3x3). It goes before turning, so the axes are the file's;
-  the sizes shown follow the part as turned. It is saved with the job and
-  the file, like the side up.
+- Scaling goes along the machine's X, Y and Z as the part sits (side up
+  chosen): the sizes shown are the part's, Z its height. It is kept as a
+  3x3 in the file's axes (`engine.rescale({ by })`: rotᵀ·D·rot·size), so a
+  stretch stays with the part when it is turned again; saved with the file
+  (older saves, [x, y, z] in the file's axes, still read). After an uneven
+  resize, clicked-face turns are kept as the turn itself (`{ rot }`).
 - Scaling one axis changes slopes, so whether the part is 3D, its flat
   floors and its sides are worked out again after scaling.
 - Tests: a cube scaled 2× evenly and 1×1×0.5 keeps its volume ratios; a

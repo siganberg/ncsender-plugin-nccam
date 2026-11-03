@@ -760,3 +760,32 @@ test('no V-bit: chamfering says so and adds nothing', async () => {
   assert.ok(!p.ops.some((o) => o.kind === 'chamfer'));
   assert.ok(p.warnings.some((w) => w.kind === 'chamfer' && /needs a V-bit/.test(w.text)));
 });
+
+test('resizing goes along the axes of the part as it sits, and stays with it when turned', async () => {
+  const { createEngine } = await import('../src/engine.js');
+  const engine = createEngine();
+  const call = (type, args = {}) => engine({ type, ...args });
+  const tris = boxTris(10, 20, 30);
+  const txt = `solid box\n${tris.map((t) => `facet normal 0 0 0\nouter loop\n${t.map((p) => `vertex ${p.join(' ')}`).join('\n')}\nendloop\nendfacet`).join('\n')}\nendsolid box\n`;
+  await call('load', { bytes: new TextEncoder().encode(txt), name: 'box.stl' });
+  const size = (r) => r.analysis.size.map((v) => Math.round(v * 1000) / 1000);
+  // Front face up: the file's Y (20) is the height
+  let r = await call('orient', { up: 'front' });
+  assert.equal(size(r)[2], 20);
+  // Half the height, as it sits
+  r = await call('rescale', { by: [1, 1, 0.5] });
+  assert.equal(size(r)[2], 10);
+  assert.deepEqual([size(r)[0], size(r)[1]].sort((a, b) => a - b), [10, 30]);
+  // Turned to the top, the part keeps that shape: 10 x 10 x 30
+  r = await call('orient', { up: 'top' });
+  assert.deepEqual(size(r), [10, 10, 30]);
+  // A saved size and turn come back the same
+  const again = createEngine();
+  await again({ type: 'load', bytes: new TextEncoder().encode(txt), name: 'box.stl', scale: r.scale });
+  assert.deepEqual(size(await again({ type: 'orient', up: { rot: r.rot } })), [10, 10, 30]);
+  // Back to the file's size; older saves ([x, y, z] in the file's axes) still read
+  r = await call('rescale', { scale: [1, 1, 1] });
+  assert.deepEqual(size(r), [10, 20, 30]);
+  await again({ type: 'load', bytes: new TextEncoder().encode(txt), name: 'box.stl', scale: [2, 1, 1] });
+  assert.deepEqual(size(await again({ type: 'orient', up: 'top' })), [20, 20, 30]);
+});

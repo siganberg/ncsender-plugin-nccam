@@ -59,7 +59,7 @@ export function mountApp(root, host, engine) {
     fileName: '', loading: '', error: '',
     up: 'top', analysis: null, part: null,
     // Size: scale in the file's X, Y, Z; lock keeps them together
-    scale: [1, 1, 1], lock: true, fileSize: null, meshKind: null,
+    scale: null, rot: null, lock: true, fileSize: null, meshKind: null,
     tools: [], numbering: 'slot', safeZ: null, connected: false, units: 'mm',
     limits: {}, travel: null,
     job: null, plan: null, planning: false, result: null, simChecks: null,
@@ -112,9 +112,9 @@ export function mountApp(root, host, engine) {
     try {
       const bytes = last ? last.bytes : await file.arrayBuffer();
       S.bytes = bytes.slice(0);
-      S.scale = last?.scale || [1, 1, 1]; S.lock = last?.lock ?? true;
-      const info = await engine('load', { bytes, name, scale: S.scale }, [bytes]);
-      S.sides = info.sides; S.fileSize = info.fileSize; S.meshKind = info.mesh || null;
+      S.lock = last?.lock ?? true;
+      const info = await engine('load', { bytes, name, scale: last?.scale }, [bytes]);
+      S.sides = info.sides; S.fileSize = info.fileSize; S.meshKind = info.mesh || null; S.scale = info.scale;
       if (last?.upPath?.length) {
         S.job = null;
         for (const up of last.upPath) await orient(up, true);
@@ -132,18 +132,21 @@ export function mountApp(root, host, engine) {
     render();
   }
 
-  // A new size: the part read again at it, turned the same way, the job kept
+  // A new size, the part kept as it sits and the job kept. by: [x, y, z]
+  // along the machine's axes; scale: a whole size in the file's axes
   let sizing = Promise.resolve();
-  function rescale(scale) {
-    S.scale = scale;
+  function rescale(change) {
     sizing = sizing.then(async () => {
       S.loading = 'Resizing the part\u2026'; render();
       try {
-        const info = await engine('rescale', { scale });
-        S.sides = info.sides;
-        const keep = S.job, path = S.upPath || [info.best];
-        S.job = null;
-        for (const up of path) await orient(up, true);
+        const r = await engine('rescale', change);
+        S.sides = r.sides; S.scale = r.scale; S.rot = r.rot;
+        S.part = { positions: r.positions, indices: r.indices };
+        S.analysis = r.analysis;
+        // A clicked face's direction changes with an uneven resize: keep how
+        // the part sits now instead of the clicks that got it there
+        if ((S.upPath || []).some((u) => Array.isArray(u) || u?.rot)) S.upPath = [{ rot: r.rot }];
+        const keep = S.job;
         S.job = { ...N.defaultJob(S.analysis), ...keep, stock: keep.stock.fit ? N.defaultJob(S.analysis).stock : keep.stock };
         S.result = null; S.maxStep = Math.min(S.maxStep, 3);
         await replan();
@@ -161,14 +164,16 @@ export function mountApp(root, host, engine) {
   const OPPOSITE = { top: 'bottom', bottom: 'top', front: 'back', back: 'front', left: 'right', right: 'left' };
   async function orient(up, replaying = false, quiet = false) {
     if (!quiet) { S.loading = 'Turning the part…'; render(); }
-    const turn = up && !Array.isArray(up) && typeof up === 'object';
+    const turn = up && !Array.isArray(up) && typeof up === 'object' && !up.rot;
     const r = await (turn ? engine('turn', { how: up.turn }) : engine(Array.isArray(up) ? 'tilt' : 'orient', Array.isArray(up) ? { normal: up } : { up }));
     return applyTurn(up, r, replaying);
   }
 
   function applyTurn(up, r, replaying) {
-    const turn = up && !Array.isArray(up) && typeof up === 'object';
+    const turn = up && !Array.isArray(up) && typeof up === 'object' && !up.rot;
+    S.rot = r.rot;
     if (turn) S.up = up.turn === 'over' ? (OPPOSITE[S.up] || 'custom') : S.up;
+    else if (up?.rot) S.up = S.up || 'custom';
     else S.up = Array.isArray(up) ? 'custom' : up;
     S.upPath = turn || Array.isArray(up) ? [...(S.upPath || []), up] : [up];
     if (replaying) { S.part = { positions: r.positions, indices: r.indices }; S.analysis = r.analysis; S.loading = ''; return; }
@@ -330,17 +335,22 @@ export function mountApp(root, host, engine) {
 
   // The part's size in the file's X, Y, Z: typed in, together or each alone
   function sizeCard() {
-    if (!S.fileSize) return '';
-    const val = (k) => { const v = S.fileSize[k] * S.scale[k]; return S.units === 'in' ? Math.round((v / N.units.INCH) * 1000) / 1000 : Math.round(v * 100) / 100; };
-    const pct = S.scale.map((v) => `${Math.round(v * 1000) / 10}%`);
-    const same = S.scale.every((v) => Math.abs(v - S.scale[0]) < 1e-9);
-    const scaled = S.scale.some((v) => Math.abs(v - 1) > 1e-9);
+    if (!S.fileSize || !S.analysis) return '';
+    const val = (k) => { const v = S.analysis.size[k]; return S.units === 'in' ? Math.round((v / N.units.INCH) * 1000) / 1000 : Math.round(v * 100) / 100; };
+    // The resize along the machine's axes as the part sits now
+    const M = S.scale || [1, 0, 0, 0, 1, 0, 0, 0, 1], R = S.rot || [1, 0, 0, 0, 1, 0, 0, 0, 1];
+    const mul = (a, b) => Array.from({ length: 9 }, (_, k) => a[(k / 3 | 0) * 3] * b[k % 3] + a[(k / 3 | 0) * 3 + 1] * b[3 + k % 3] + a[(k / 3 | 0) * 3 + 2] * b[6 + k % 3]);
+    const K = mul(mul(R, M), [R[0], R[3], R[6], R[1], R[4], R[7], R[2], R[5], R[8]]);
+    const even = [1, 2, 3, 5, 6, 7].every((i) => Math.abs(K[i]) < 1e-6);
+    const pct = [K[0], K[4], K[8]].map((v) => `${Math.round(v * 1000) / 10}%`);
+    const same = even && Math.abs(K[0] - K[4]) < 1e-9 && Math.abs(K[0] - K[8]) < 1e-9;
+    const scaled = !(same && Math.abs(K[0] - 1) < 1e-9);
     // An STL has no unit: a whole part under about 12 across was likely drawn in inches
     const inches = S.meshKind === 'stl' && !scaled && Math.max(...S.fileSize) < 12;
     return `<div class="ncc-card">
-        ${toggleRow('lock', 'Keep the proportions', same ? (scaled ? `Scaled to ${pct[0]}` : 'As in the file') : `Scaled ${pct.join(' \u00d7 ')}`, S.lock)}
+        ${toggleRow('lock', 'Keep the proportions', !scaled ? 'As in the file' : same ? `Scaled to ${pct[0]}` : even ? `Scaled ${pct.join(' \u00d7 ')}` : 'Stretched', S.lock)}
         <div class="ncc-fields">${['X', 'Y', 'Z'].map((a, k) => `<div class="ncc-field"><label for="ncc-size${k}">${a} (${S.units})</label><input id="ncc-size${k}" class="ncc-input ncc-mono" inputmode="decimal" data-size="${k}" value="${val(k)}"></div>`).join('')}</div>
-        <div class="ncc-row-sub">In the file\u2019s own X, Y and Z, before turning it.${scaled ? ' <button type="button" class="ncc-link" data-scale="reset">Back to the file\u2019s size</button>' : ''}</div>
+        <div class="ncc-row-sub">The part as it sits now, side up chosen: Z is its height.${scaled ? ' <button type="button" class="ncc-link" data-scale="reset">Back to the file\u2019s size</button>' : ''}</div>
         ${inches ? `<div class="ncc-hint">${ICONS.info}<span>Only ${n(Math.max(...S.fileSize))} across: STL files have no unit, so this may have been drawn in inches. <button type="button" class="ncc-link" data-scale="inch">Make it inches (\u00d7 25.4)</button></span></div>` : ''}
       </div>`;
   }
@@ -873,9 +883,9 @@ export function mountApp(root, host, engine) {
       if (!S.job.stock.fit && st) Object.assign(S.job.stock, { width: st.width, depth: st.depth, thickness: st.thickness });
       return changed();
     }
-    if (d.toggle === 'lock') { S.lock = !S.lock; if (S.lock && !S.scale.every((v) => v === S.scale[0])) return rescale([S.scale[0], S.scale[0], S.scale[0]]); remember(); return render(); }
-    if (d.scale === 'reset') return rescale([1, 1, 1]);
-    if (d.scale === 'inch') return rescale([N.units.INCH, N.units.INCH, N.units.INCH]);
+    if (d.toggle === 'lock') { S.lock = !S.lock; remember(); return render(); }
+    if (d.scale === 'reset') return rescale({ scale: [1, 1, 1] });
+    if (d.scale === 'inch') return rescale({ scale: [N.units.INCH, N.units.INCH, N.units.INCH] });
     if (d.toggle === 'tabs') { S.job.tabs.enabled = !S.job.tabs.enabled; return changed(); }
     if (d.toggle === 'chamfer') {
       const c = S.job.chamfer || {};
@@ -925,9 +935,10 @@ export function mountApp(root, host, engine) {
     if (t.dataset.tool) { S.job.toolOverride[t.dataset.tool] = +t.value || t.value; return changed(); }
     if (t.dataset.size) {
       const k = +t.dataset.size, v = parseFloat(String(t.value).replace(',', '.'));
-      if (!(Number.isFinite(v) && v > 0 && S.fileSize[k] > 0)) return render();
-      const f = N.units.toMm(v, S.units) / S.fileSize[k];
-      return rescale(S.lock ? [f, f, f] : S.scale.map((s, i) => (i === k ? f : s)));
+      if (!(Number.isFinite(v) && v > 0 && S.analysis?.size[k] > 0)) return render();
+      const f = N.units.toMm(v, S.units) / S.analysis.size[k];
+      if (Math.abs(f - 1) < 1e-9) return render();
+      return rescale({ by: S.lock ? [f, f, f] : [0, 1, 2].map((i) => (i === k ? f : 1)) });
     }
     if (t.dataset.stock) {
       const v = parseFloat(String(t.value).replace(',', '.'));
