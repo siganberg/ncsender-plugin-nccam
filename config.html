@@ -161,6 +161,11 @@
   .ncc-overlay.tr { right: 12px; top: 12px; flex-direction: column; align-items: flex-end; }
   .ncc-overlay.bl { left: 12px; bottom: 12px; flex-wrap: wrap; }
   .ncc-busy { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; gap: 12px; color: var(--color-text-secondary); background: color-mix(in srgb, var(--color-surface-muted) 70%, transparent); }
+  .ncc-busy-in { display: flex; flex-direction: column; align-items: center; gap: 10px; }
+  .ncc-busy-row { display: flex; align-items: center; gap: 12px; }
+  .ncc-elapsed { font-family: var(--font-mono, ui-monospace, monospace); font-size: 12px; opacity: 0.6; }
+  .ncc-busy-tip { max-width: 380px; text-align: center; font-size: 12px; line-height: 1.5; opacity: 0.75; }
+  .ncc-busy-tip[hidden] { display: none; }
   .ncc-spin { width: 22px; height: 22px; border-radius: 50%; border: 3px solid color-mix(in srgb, var(--color-accent) 25%, transparent); border-top-color: var(--color-accent); animation: ncc-spin .8s linear infinite; }
   @keyframes ncc-spin { to { transform: rotate(360deg); } }
   .ncc-found { display: flex; flex-direction: column; gap: 10px; }
@@ -246,7 +251,7 @@
 <script>
 (function () {
   var PORT = __SERVER_PORT__;
-  var BUILD = '0.1.4-mw0ok7nt';
+  var BUILD = '0.1.4-mw15ux8p';
   var base = window.ncSender && typeof window.ncSender.getApiBaseUrl === 'function' ? window.ncSender.getApiBaseUrl(PORT) : '';
   var file = function (name) { return base + '/api/plugins/com.ncsender.nccam/icon?file=' + encodeURIComponent(name); };
   var root = document.getElementById('ncc-root');

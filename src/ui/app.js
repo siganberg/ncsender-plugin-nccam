@@ -233,13 +233,33 @@ export function mountApp(root, host, engine) {
   // ncCAM works in the browser that shows it. On a small computer (a
   // Raspberry Pi running ncSender) planning can take a while; ncSender's
   // own page opened from a laptop's browser plans there instead.
-  const SLOW = { plan: 6000, paths: 15000 };
-  function slowNote(ms, paths) {
+  const SLOW = { plan: 6000, paths: 15000, tip: 5000 };
+  const smallHere = () => {
     const small = /aarch64|arm64|armv\d|raspberry/i.test(navigator.userAgent || '') || (navigator.hardwareConcurrency || 8) <= 4;
     const here = /^(localhost|127\.|\[?::1)/.test(location.hostname || 'localhost') || !/^https?:$/.test(location.protocol);
-    if (!small || !here || ms < (paths ? SLOW.paths : SLOW.plan)) return null;
+    return small && here;
+  };
+  function slowNote(ms, paths) {
+    if (!smallHere() || ms < (paths ? SLOW.paths : SLOW.plan)) return null;
     return `${paths ? 'Making the toolpaths' : 'Planning'} took ${Math.round(ms / 1000)} s on this small computer. ncCAM runs in the browser that shows it: open ncSender in a browser on a laptop or desktop (this machine's address, port 8090) and it works there, usually several times faster. Programs still save to this machine.`;
   }
+
+  // Busy: a spinner, the seconds so far (quietly), and on a small computer,
+  // after a few seconds, where it would be faster
+  function busyBox(label, style = '') {
+    return `<div class="ncc-busy" ${style ? `style="${style}"` : ''}><div class="ncc-busy-in"><div class="ncc-busy-row"><span class="ncc-spin"></span>${esc(label)}<span class="ncc-elapsed" data-elapsed></span></div>
+      <div class="ncc-busy-tip" data-slowtip hidden>Slow for your parts? Open ncSender in a browser on a laptop or desktop (this machine's address, port 8090): ncCAM works there, usually several times faster.</div></div></div>`;
+  }
+  let busyStart = null;
+  setInterval(() => {
+    if (!root.isConnected) return;
+    const busy = S.loading || S.planning || (S.result && !S.simChecks && S.step === 4);
+    if (!busy) { busyStart = null; return; }
+    busyStart ??= performance.now();
+    const ms = performance.now() - busyStart, sec = Math.floor(ms / 1000);
+    root.querySelectorAll('[data-elapsed]').forEach((e) => { e.textContent = sec >= 2 ? ` ${sec} s` : ''; });
+    if (ms >= SLOW.tip && smallHere()) root.querySelectorAll('[data-slowtip]').forEach((e) => { e.hidden = false; });
+  }, 500);
 
   // The part and its settings for next time
   let saveTimer = null;
@@ -285,7 +305,7 @@ export function mountApp(root, host, engine) {
     const slot = root.querySelector('[data-viewer]');
     if (slot) {
       slot.replaceWith(viewer.el);
-      const busy = S.loading || (step === 4 && !S.result) ? `<div class="ncc-busy"><span class="ncc-spin"></span>${esc(S.loading || 'Making toolpaths…')}</div>` : '';
+      const busy = S.loading || (step === 4 && !S.result) ? busyBox(S.loading || 'Making toolpaths…') : '';
       viewer.el.querySelectorAll('.ncc-busy, .ncc-overlay').forEach((e) => e.remove());
       viewer.el.insertAdjacentHTML('beforeend', (step === 1 ? modelOverlay() : step === 4 ? previewOverlay() : '') + busy);
       viewer.fit();
@@ -512,7 +532,7 @@ export function mountApp(root, host, engine) {
   // ---------- step 3 ----------
   function stepOps() {
     const p = S.plan;
-    if (!p) return `<div class="ncc-busy" style="position: static; flex: 1"><span class="ncc-spin"></span>Planning\u2026</div>`;
+    if (!p) return busyBox('Planning\u2026', 'position: static; flex: 1');
     const rows = p.ops.map((o) => {
       const choices = toolChoices(o);
       return `<div class="ncc-op ${o.enabled ? '' : 'off'} ${S.focusOp === o.id ? 'focus' : ''}" data-focus="${o.id}">
@@ -627,7 +647,7 @@ export function mountApp(root, host, engine) {
 
   function checks() {
     const c = S.simChecks;
-    if (!c) return `<div class="ncc-row-sub">${S.result ? 'Checking…' : 'Waiting for the toolpaths…'}</div>`;
+    if (!c) return `<div class="ncc-row-sub">${S.result ? 'Checking…' : 'Waiting for the toolpaths…'}<span class="ncc-elapsed" data-elapsed></span></div>`;
     return c.items.map((i) => `<div class="ncc-check"><span class="ncc-ck ${i.state}">${i.state === 'bad' ? ICONS.cross : i.state === 'info' ? '!' : ICONS.check}</span><span>${esc(i.text)}</span></div>`).join('');
   }
 
