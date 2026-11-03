@@ -661,20 +661,30 @@ function simplifyZ(pts, tol) {
 // Areas of consecutive layers that overlap, joined into columns: each is
 // one area (its first part, for nearestFirst) with all its parts in order.
 function spots(layers) {
-  const open = [], all = [];
+  const open = [];
+  let all = [];
   layers.forEach((layer, k) => {
     const next = [];
     for (const area of C.regions(layer.region)) {
       const b = C.bounds([area[0]]);
-      const s = open.find((o) => o.k === k - 1 && o.b.minX < b.maxX && b.minX < o.b.maxX && o.b.minY < b.maxY && b.minY < o.b.maxY && C.area(C.intersection(o.last, area)) > 0);
-      const spot = s ? s.spot : { parts: [] };
-      if (!s) all.push(spot);
+      // Every column this area is under: two that join lower down are one,
+      // cut layer by layer across both, so neither is cut below the other's
+      // uncut upper layers
+      const under = [...new Set(open.filter((o) => o.b.minX < b.maxX && b.minX < o.b.maxX && o.b.minY < b.maxY && b.minY < o.b.maxY && C.area(C.intersection(o.last, area)) > 0).map((o) => o.spot))];
+      const spot = under[0] || { parts: [] };
+      if (!under.length) all.push(spot);
+      for (const other of under.slice(1)) {
+        spot.parts.push(...other.parts);
+        all = all.filter((x) => x !== other);
+        for (const o of [...open, ...next]) if (o.spot === other) o.spot = spot;
+      }
       spot.parts.push({ k, area });
       next.push({ k, b, last: area, spot });
     }
     open.length = 0;
     open.push(...next);
   });
+  for (const spot of all) spot.parts.sort((a, b) => a.k - b.k);
   // nearestFirst takes areas: give each column its first part's, and back
   return all.map((spot) => Object.assign([...spot.parts[0].area], { parts: spot.parts }));
 }
@@ -705,9 +715,12 @@ class Cleared {
     this.ny = Math.ceil((stock.maxY - stock.minY) / this.c) + 1;
     this.top = new Float32Array(this.nx * this.ny).fill(zTop);
   }
-  // Even-odd over the loops, row by row
-  layer(loops, zFrom, z) {
+  // Even-odd over the loops, row by row. A cell counts as cleared only when
+  // all of it is: a wall thinner than a cell between two cell centres would
+  // otherwise be missed, and a rapid cross it.
+  layer(cut, zFrom, z) {
     const { c, x0, y0, nx, ny, top } = this;
+    const loops = C.offset(cut, -(c * Math.SQRT1_2 + 0.02));
     for (let j = 0; j < ny; j++) {
       const y = y0 + j * c, xs = [];
       for (const l of loops) for (let k = 0; k < l.length; k++) {
@@ -836,7 +849,10 @@ export function toolpaths(p) {
       case 'finish3d': surface3d(path, op.surface, op.tool, fd, op.ridge, 0, op.left ?? LAYER_LEFT, op.steep !== false); break;
       case 'drill': drill(path, op.centers, fd, zTop, op.zBottom, op.tool.diameter); break;
       case 'cutout': cutout(path, op.region, r, fd, zTop, op.zBottom, p.job, allowance); break;
-      case 'chamfer': chamfer(path, op.levels, fd); break;
+      // Edges on the model's top stand on any stock left above it (no
+      // facing): the same outline, higher (the cut-out and pockets went
+      // through it), so the pass moves up with them
+      case 'chamfer': chamfer(path, op.levels.map((l) => (l.z >= p.analysis.top - 1e-6 ? { ...l, z: l.z + surface - p.analysis.top } : l)), fd); break;
     }
     op.moves = path.moves;
   }

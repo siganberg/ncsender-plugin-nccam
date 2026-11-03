@@ -849,3 +849,48 @@ test('chamfering the edges works on the flat faces of a part cut in 3D', () => {
   assert.equal(r.collisions, 0);
   assert.equal(r.over, 0);
 });
+
+test('3D rapids don\'t cross a wall thinner than the cleared-height grid', () => {
+  // Four fins 0.5 mm thick and 12 mm tall, 3.5 mm apart: the cells either
+  // side of a fin are cleared deep, the fin is between their centres
+  const pos = [], idx = [];
+  const box = (x0, y0, z0, x1, y1, z1) => {
+    const b = pos.length / 3;
+    for (let i = 0; i < 8; i++) pos.push(i & 1 ? x1 : x0, i & 2 ? y1 : y0, i & 4 ? z1 : z0);
+    for (const t of [[0, 2, 1], [1, 2, 3], [4, 5, 6], [5, 7, 6], [0, 1, 4], [1, 5, 4], [2, 6, 3], [3, 6, 7], [0, 4, 2], [2, 4, 6], [1, 3, 5], [3, 7, 5]]) idx.push(...t.map((k) => b + k));
+  };
+  box(0, 0, 0, 40, 30, 2);
+  for (let k = 0; k < 4; k++) box(10.2 + k * 4, 5, 2, 10.7 + k * 4, 25, 14);
+  const lib = N.normalizeTools([
+    { id: 1, toolId: 1, name: '1/4" Flat End Mill', type: 'flat', diameter: 6.35, dimensions: { flute_length: 25 } },
+    { id: 3, toolId: 3, name: '1/8" Flat End Mill', type: 'flat', diameter: 3.175, dimensions: { flute_length: 20 } },
+    { id: 4, toolId: 4, name: '1/4" Ball End Mill', type: 'ball', diameter: 6.35, dimensions: { flute_length: 25 } },
+  ]);
+  const mesh = N.orient({ positions: Float64Array.from(pos), indices: Uint32Array.from(idx), faces: [], solids: 1, names: [] }, 'top');
+  const p = N.toolpaths(N.plan(mesh, lib, { ...N.defaultJob(N.analyze(mesh)), surface3d: true }));
+  assert.ok(p.ops.some((o) => o.kind === 'rest3d'));
+  assert.equal(N.simulate(p, 0.05).collisions.length, 0);
+});
+
+test('chamfers on the top edge stand on stock left unfaced', async () => {
+  const { p } = await make('stepped.step', (j) => ({ ...j, stock: { ...j.stock, extraTop: 3 }, disabled: { face: true }, chamfer: { size: 1 } }), VLIB);
+  assert.ok(p.ops.some((o) => o.kind === 'chamfer'));
+  assert.equal(N.simulate(p, 0.1).collisions.length, 0);
+  // The top edge's pass goes down from the stock's top, not the model's
+  const op = p.ops.find((o) => o.kind === 'chamfer');
+  const deepest = Math.min(...op.moves.filter((m) => !m.r).map((m) => m.z));
+  assert.ok(op.moves.some((m) => !m.r && Math.abs(m.z - (p.stock.top - op.levels[0].depth)) < 1e-6), `deepest ${deepest}`);
+});
+
+test('3D roughing layers follow the finishing ball the user picks', () => {
+  const lib = N.normalizeTools([...LIBRARY, { id: 9, toolId: 9, name: '1/4 ball', type: 'ball', diameter: 6.35 }, { id: 10, toolId: 10, name: '1/8 ball', type: 'ball', diameter: 3.175 }]);
+  const mesh = N.orient(domeOnPlinth(), 'top');
+  const job = { ...N.defaultJob(N.analyze(mesh)), surface3d: true };
+  for (const over of [{}, { finish3d: 10 }]) {
+    const p = N.plan(mesh, lib, { ...job, toolOverride: over });
+    const f = p.ops.find((o) => o.kind === 'finish3d');
+    assert.equal(f.tool.name, over.finish3d ? '1/8 ball' : '1/4 ball');
+    const gap = Math.max(...p.ops.find((o) => o.kind === 'rough3d').layers.map((l) => l.zFrom - l.z));
+    assert.ok(gap <= f.feeds.stepdown + 1e-6, `${f.tool.name}: layers ${gap} apart, step-down ${f.feeds.stepdown}`);
+  }
+});

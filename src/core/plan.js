@@ -200,8 +200,9 @@ export function plan(mesh, tools, job, limits = {}) {
     if (!balls.length) warnings.push({ kind: 'noball', text: `No ball end mill in your Tool Library is long enough, so ${rough.name} finishes the 3D surface. A ball end mill leaves it much smoother.` });
     // Layers no more than a step-down apart, landing on every flat floor
     // The ball finishes the stairs between layers in one go, so no thicker
-    // than a step-down for either tool
-    const step = Math.min(opFeeds(rough).stepdown, opFeeds(finisher).stepdown);
+    // than a step-down for either tool, as they will run (the user may pick others)
+    const asRun = (id, t) => tools.find((x) => x.id === job.toolOverride?.[id]) || t;
+    const step = Math.min(opFeeds(asRun('rough3d', rough)).stepdown, opFeeds(asRun('finish3d', finisher)).stepdown);
     // Only floors with real area: a mesh has stray flat triangles everywhere
     const keys = [analysis.top, ...analysis.floors.filter((z) => z < analysis.top - EPS && z > EPS && (analysis.floorAreas[z] || 0) >= FLOOR_3D), 0];
     const zs = [];
@@ -235,7 +236,7 @@ export function plan(mesh, tools, job, limits = {}) {
     }
     if (!layers.length) return false;
     const ridge = RIDGE_3D[job.finish] ?? RIDGE_3D.balanced;
-    const r3 = add({ kind: 'rough3d', label: 'Rough the 3D shape', tool: take(rough), zTop: analysis.top, zBottom: layers[layers.length - 1].z, region: ring, layers, allowance: ALLOW_3D, detail: `${layers.length} layers · ${L(ALLOW_3D)} left` });
+    const r3 = add({ id: 'rough3d', kind: 'rough3d', label: 'Rough the 3D shape', tool: take(rough), zTop: analysis.top, zBottom: layers[layers.length - 1].z, region: ring, layers, allowance: ALLOW_3D, detail: `${layers.length} layers · ${L(ALLOW_3D)} left` });
     // What the roughing end mill can't get into (holes, slots, tight
     // corners): a smaller one clears it, layer by layer, to the wall
     // The roughing tool as it will run (the user may have picked another)
@@ -267,7 +268,7 @@ export function plan(mesh, tools, job, limits = {}) {
       if (C.offset(left, -0.25).length) warnings.push({ kind: 'notool', text: `Some holes or slots are narrower than ${tool.name} and stay uncut: add a smaller end mill to the Tool Library.` });
       else if (C.area(left) >= TINY) warnings.push({ kind: 'corners', text: `Inside corners stay rounded to ${L(tool.diameter / 2)}: no smaller end mill in your library.` });
     }
-    add({ kind: 'finish3d', label: 'Finish the 3D surface', tool: take(finisher), zTop: analysis.top, zBottom: 0, region: footprint, after, ridge, detail: `Parallel passes${job.finish === 'fast' ? '' : ' and waterlines on steep walls'} · ${len(ridge, job.units, job.units === 'in' ? 4 : 2)} ridges`, steep: job.finish !== 'fast', left: step + ALLOW_3D + 1.2 });
+    add({ id: 'finish3d', kind: 'finish3d', label: 'Finish the 3D surface', tool: take(finisher), zTop: analysis.top, zBottom: 0, region: footprint, after, ridge, detail: `Parallel passes${job.finish === 'fast' ? '' : ' and waterlines on steep walls'} · ${len(ridge, job.units, job.units === 'in' ? 4 : 2)} ridges`, steep: job.finish !== 'fast', left: step + ALLOW_3D + 1.2 });
     warnings.push({ kind: 'surface3d', text: `Curved faces are cut in 3D: roughed in ${layers.length} layers, then ${finisher.name} follows the surface.` });
     return true;
   }
