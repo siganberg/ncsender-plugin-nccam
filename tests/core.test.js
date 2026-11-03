@@ -894,3 +894,22 @@ test('3D roughing layers follow the finishing ball the user picks', () => {
     assert.ok(gap <= f.feeds.stepdown + 1e-6, `${f.tool.name}: layers ${gap} apart, step-down ${f.feeds.stepdown}`);
   }
 });
+
+test('a drill a little smaller than a hole drills it: a pilot before an end mill, or alone, a note saying how much under', async () => {
+  // bracket.step's two Ø10 holes: a 9.8 mm drill is 0.2 mm under
+  const drill98 = { id: 20, toolId: 20, name: '9.8 mm drill', type: 'drill', diameter: 9.8, dimensions: { flute_length: 30 } };
+  const { p } = await make('bracket.step', (j) => j, N.normalizeTools([...LIBRARY, drill98]));
+  const pilot = p.ops.find((o) => o.kind === 'drill' && o.pilot);
+  const hole = p.ops.find((o) => o.kind === 'hole');
+  assert.ok(pilot && hole && hole.after === pilot.id);
+  assert.ok(p.ops.indexOf(pilot) < p.ops.indexOf(hole));
+  // No end mill small enough: the drill alone
+  const only = N.normalizeTools([drill98, ...LIBRARY.filter((t) => t.type !== 'flat'), { id: 21, toolId: 21, name: '1/2" end mill', type: 'flat', diameter: 12.7, dimensions: { flute_length: 30 } }]);
+  const { p: q } = await make('bracket.step', (j) => j, only);
+  const d = q.ops.find((o) => o.kind === 'drill');
+  assert.ok(d && !d.pilot && /under size/.test(d.detail));
+  assert.ok(q.warnings.some((w) => w.kind === 'drill' && /0\.2 mm under size/.test(w.text)));
+  // Too far under (more than 0.25 mm or 6%): not a drill for this hole
+  const { p: r } = await make('bracket.step', (j) => j, N.normalizeTools([...only.filter((t) => t.id !== 20), { ...drill98, id: 22, diameter: 9.3 }]));
+  assert.ok(!r.ops.some((o) => o.kind === 'drill'));
+});

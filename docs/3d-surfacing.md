@@ -243,6 +243,19 @@ up, 118 face down.
 
 Now: 83 min face up, 89 face down, no gouges or rapids into material.
 
+## 9. To fix later (from the third review, 2026-11-02)
+
+- **Switching an op off** lets later ops rapid into the material it would
+  have removed (e.g. Step off on `stepped.step`: the hole and chamfer ops
+  come down into it; 4 collisions in the simulation). Older than these
+  changes. Fix: work out what is cleared from the ops that run, as 3D
+  roughing does (`clearedDown`), or warn and keep the dependent ops off.
+- **3MF:** a triangle missing a vertex number becomes NaN and passes the
+  bounds check; the unit is read only if `<model>` is in the first 2000
+  characters. Check every index is a whole number; find the tag anywhere.
+- **The 0.1.4 worker** stays alive after an update until ncSender reloads
+  (old builds keep no handle to it). Nothing to do but note it.
+
 ## Tests to add
 
 - A hemisphere fixture (faceted STEP): roughing leaves at most the allowance;

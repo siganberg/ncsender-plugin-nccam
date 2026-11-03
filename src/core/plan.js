@@ -75,6 +75,8 @@ function overhangs(mesh) {
 
 const rect = (b) => [[[b.minX, b.minY], [b.maxX, b.minY], [b.maxX, b.maxY], [b.minX, b.maxY]]];
 const sameD = (a, b) => Math.abs(a - b) < 0.05;
+// mm: a drill this much smaller than a hole (or 6% of it) still drills it
+const DRILL_UNDER = 0.25;
 
 // A hole: one loop, every point the same distance from the middle.
 function asCircle(region) {
@@ -340,25 +342,32 @@ export function plan(mesh, tools, job, limits = {}) {
     }
   }
 
-  // 4. Holes: a drill of the same size, otherwise an end mill spirals down.
+  // 4. Holes: a drill of the same size; otherwise an end mill spirals down,
+  // after a drill a little smaller than the hole (a pilot), if there is one;
+  // with no end mill that fits, that drill alone (a note says how much under).
   for (const h of holes.values()) {
     const n = h.centers.length;
     const depth = h.zTop - h.zBottom;
     const what = `Ø${L(h.d)} ${h.through ? 'through' : `${L(h.zTop - h.zBottom)} deep`}`;
+    const drillOp = (t, label, detail, extra = {}) => add({ kind: 'drill', label, tool: take(t), zTop: h.zTop, zBottom: h.zBottom, centers: h.centers, detail, ...extra });
     const drill = drills.find((t) => sameD(t.diameter, h.d) && fluteOk(t, depth));
     if (drill) {
-      add({ kind: 'drill', label: n > 1 ? `Drill ${n} holes` : 'Drill the hole', tool: take(drill), zTop: h.zTop, zBottom: h.zBottom, centers: h.centers, detail: what });
+      drillOp(drill, n > 1 ? `Drill ${n} holes` : 'Drill the hole', what);
       continue;
     }
+    const near = drills.filter((t) => t.diameter < h.d && h.d - t.diameter <= Math.max(DRILL_UNDER, h.d * 0.06) && fluteOk(t, depth)).sort((a, b) => b.diameter - a.diameter)[0];
     const region = h.regions.flat().length ? h.regions.flatMap((r) => r) : [];
-    const tool = roughTool(region, depth, 0) || null;
-    if (!tool || tool.diameter > h.d - 0.4) {
-      const small = flats.find((t) => t.diameter <= h.d - 0.4 && fluteOk(t, depth));
-      if (!small) { warnings.push({ kind: 'notool', text: `No drill or end mill fits the ${what} hole${n > 1 ? 's' : ''}.` }); continue; }
-      add({ kind: 'hole', label: n > 1 ? `Cut ${n} holes` : 'Cut the hole', tool: take(small), zTop: h.zTop, zBottom: h.zBottom, region, centers: h.centers, detail: `${what} · spiral` });
+    let tool = roughTool(region, depth, 0) || null;
+    if (!tool || tool.diameter > h.d - 0.4) tool = flats.find((t) => t.diameter <= h.d - 0.4 && fluteOk(t, depth)) || null;
+    if (!tool) {
+      if (!near) { warnings.push({ kind: 'notool', text: `No drill or end mill fits the ${what} hole${n > 1 ? 's' : ''}.` }); continue; }
+      const under = L(h.d - near.diameter, job.units === 'in' ? 4 : 2);
+      drillOp(near, n > 1 ? `Drill ${n} holes` : 'Drill the hole', `${what} · ${under} under size`);
+      warnings.push({ kind: 'drill', text: `${n > 1 ? `The ${n} ${what} holes are` : `The ${what} hole is`} drilled with ${near.name}, ${under} under size: no end mill fits to cut ${n > 1 ? 'them' : 'it'} to size.` });
       continue;
     }
-    add({ kind: 'hole', label: n > 1 ? `Cut ${n} holes` : 'Cut the hole', tool: take(tool), zTop: h.zTop, zBottom: h.zBottom, region, centers: h.centers, detail: `${what} · spiral` });
+    const pilot = near ? drillOp(near, n > 1 ? `Drill ${n} pilot holes` : 'Drill a pilot hole', `${what} · then ${L(h.d)} with an end mill`, { pilot: true }) : null;
+    add({ kind: 'hole', label: n > 1 ? `Cut ${n} holes` : 'Cut the hole', tool: take(tool), zTop: h.zTop, zBottom: h.zBottom, region, centers: h.centers, detail: `${what} · spiral`, ...(pilot ? { after: pilot.id } : {}) });
   }
 
   // 5. Cut the part free.

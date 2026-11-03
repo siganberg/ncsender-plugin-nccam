@@ -359,7 +359,7 @@ export function mountApp(root, host, engine) {
     if (!S.plan) return `<div class="ncc-card"><div class="ncc-label">Found in this part</div><div class="ncc-row-sub">${S.planning ? 'Looking…' : ''}</div></div>`;
     // The same feature more than once is one line: "5 pockets, through"
     const groups = new Map();
-    for (const o of S.plan.ops.filter((x) => x.kind !== 'face' && x.kind !== 'corners' && x.kind !== 'finish3d' && x.kind !== 'rest3d' && x.id !== 'chamfer')) {
+    for (const o of S.plan.ops.filter((x) => x.kind !== 'face' && x.kind !== 'corners' && x.kind !== 'finish3d' && x.kind !== 'rest3d' && x.id !== 'chamfer' && !x.pilot)) {
       const name = featureName(o);
       const g = groups.get(name) || { o, name, n: 0 };
       g.n += o.count || 1;
