@@ -359,7 +359,7 @@ export function mountApp(root, host, engine) {
     if (!S.plan) return `<div class="ncc-card"><div class="ncc-label">Found in this part</div><div class="ncc-row-sub">${S.planning ? 'Looking…' : ''}</div></div>`;
     // The same feature more than once is one line: "5 pockets, through"
     const groups = new Map();
-    for (const o of S.plan.ops.filter((x) => x.kind !== 'face' && x.kind !== 'corners' && x.kind !== 'finish3d' && x.kind !== 'rest3d')) {
+    for (const o of S.plan.ops.filter((x) => x.kind !== 'face' && x.kind !== 'corners' && x.kind !== 'finish3d' && x.kind !== 'rest3d' && x.id !== 'chamfer')) {
       const name = featureName(o);
       const g = groups.get(name) || { o, name, n: 0 };
       g.n += o.count || 1;
@@ -376,6 +376,7 @@ export function mountApp(root, host, engine) {
     if (o.kind === 'rough3d') return `3D surface, ${L(o.zTop)} tall`;
     if (o.kind === 'hole' || o.kind === 'drill') return `${o.centers.length > 1 ? `${o.centers.length} holes` : 'Hole'}, ${d}`;
     if (o.kind === 'step') return `Step, ${d}`;
+    if (o.kind === 'chamfer') return `${o.count > 1 ? `${o.count} chamfers` : 'Chamfer'}, ${L(o.size)} \u00d7 ${Math.round(o.angle * 10) / 10}\u00b0`;
     return `Pocket, ${d.split(' · ').pop()}`;
   }
 
@@ -388,7 +389,7 @@ export function mountApp(root, host, engine) {
 
   function modelOverlay() {
     if (!S.plan) return '';
-    const kinds = [...new Set(S.plan.ops.filter((o) => o.kind !== 'face' && o.kind !== 'corners' && o.kind !== 'finish3d' && o.kind !== 'rest3d').map((o) => o.kind))];
+    const kinds = [...new Set(S.plan.ops.filter((o) => o.kind !== 'face' && o.kind !== 'corners' && o.kind !== 'finish3d' && o.kind !== 'rest3d' && o.id !== 'chamfer').map((o) => o.kind))];
     const label = { pocket: 'Pockets', hole: 'Holes', drill: 'Holes', step: 'Steps', cutout: 'Outline', rough3d: '3D surface', chamfer: 'Chamfers' };
     return `<div class="ncc-overlay tr">${kinds.map((k) => `<span class="ncc-chip"><span class="ncc-swatch" style="background: ${OP_COLORS[k]}"></span>${label[k]}</span>`).join('')}</div>
       <div class="ncc-overlay bl"><span class="ncc-chip">Drag to rotate</span><span class="ncc-chip">Scroll to zoom</span><span class="ncc-chip">Click a face to put it on top</span></div>`;
@@ -401,6 +402,7 @@ export function mountApp(root, host, engine) {
     const key = S.part.positions;
     const overlays = (S.plan?.ops || []).filter((o) => o.kind !== 'face' && o.kind !== 'corners').flatMap((o) => {
       if (o.kind === 'cutout') return [{ loops: o.region, z: o.zTop + 0.05, color: OP_COLORS.cutout, dashed: true }];
+      if (o.kind === 'chamfer') return o.id === 'chamfer' ? [] : o.show.map((v) => ({ loops: v.loops, z: v.z + 0.05, color: OP_COLORS.chamfer }));
       if (o.centers && !o.region) return [{ loops: o.centers.map((c) => circle(c)), z: o.zTop + 0.05, color: OP_COLORS[o.kind] }];
       return [{ loops: o.region, z: o.zTop + 0.05, color: OP_COLORS[o.kind] }];
     });
@@ -532,11 +534,10 @@ export function mountApp(root, host, engine) {
 
   // Chamfer the top edges: an option for 2.5D parts, cut with a V-bit
   function chamferCard() {
-    if (S.plan.did3d) return '';
     const c = S.job.chamfer, on = c?.size > 0;
     const size = on ? c.size : CHAMFER.size;
     const edges = c?.edges || 'all';
-    const sub = !on ? 'Off: edges stay sharp.' : S.plan.ops.some((o) => o.kind === 'chamfer') ? 'A V-bit runs along each edge after the cut-out.' : 'No edge can be chamfered: see the notes below.';
+    const sub = !on ? 'Off: edges stay sharp.' : S.plan.ops.some((o) => o.kind === 'chamfer') ? 'A V-bit runs along each top edge of a flat face, after the cut-out.' : 'No edge can be chamfered: see the notes below.';
     return `<div class="ncc-card" style="margin-top: 10px">
         <div class="ncc-row"><div class="ncc-row-text"><div class="ncc-row-title">Chamfer the edges</div><div class="ncc-row-sub">${esc(sub)}</div></div><button class="ncc-toggle" type="button" role="switch" aria-checked="${on}" aria-label="Chamfer the edges" data-toggle="chamfer"></button></div>
         ${on ? `<div class="ncc-row"><span class="ncc-row-title" style="font-weight: 500">Width</span><div class="ncc-stepper"><button type="button" data-chamfer="-1" aria-label="Narrower chamfer" ${size <= CHAMFER.min + 1e-6 ? 'disabled' : ''}>\u2212</button><span class="ncc-mono">${L(size, S.units === 'in' ? 3 : 1)}</span><button type="button" data-chamfer="1" aria-label="Wider chamfer" ${size >= CHAMFER.max - 1e-6 ? 'disabled' : ''}>+</button></div></div>
@@ -548,7 +549,7 @@ export function mountApp(root, host, engine) {
   function threeD() {
     // What was asked for (or chosen from the shape), and whether it could be done
     const on = !!S.plan.mode3d, done = !!S.plan.did3d;
-    if (!on && !S.plan.analysis.sloped) return '';
+    if (!on && !(S.plan.curved ?? S.plan.analysis.sloped)) return '';
     return `<div class="ncc-op" style="margin-bottom: 10px">
         <div class="ncc-op-icon" style="background: color-mix(in srgb, ${OP_COLORS.finish3d} 16%, transparent); color: ${OP_COLORS.finish3d}">${ICONS.finish3d}</div>
         <div class="ncc-op-text"><div class="ncc-op-title">Cut curved faces in 3D</div><div class="ncc-op-sub">${!on ? 'Off: sloped and curved faces are left square.' : done ? 'Roughed in layers, then a ball end mill follows the surface.' : 'On, but no end mill is long enough: cut in 2.5D for now.'}</div></div>
@@ -560,8 +561,9 @@ export function mountApp(root, host, engine) {
   // stands out, the rest fade.
   function showOpsView() {
     const ops = (S.plan?.ops || []).filter((o) => o.enabled && o.kind !== 'face');
-    const overlays = ops.map((o) => {
+    const overlays = ops.flatMap((o) => {
       const dim = S.focusOp && S.focusOp !== o.id;
+      if (o.kind === 'chamfer') return o.show.map((v) => ({ loops: v.loops, z: v.z + 0.05, color: OP_COLORS.chamfer, opacity: dim ? 0.2 : 1, top: v.z }));
       const loops = o.region || (o.centers || []).map((c) => circle(c));
       return { loops, z: o.kind === 'cutout' ? o.zTop + 0.05 : Math.max(o.zBottom, 0) + 0.05, color: OP_COLORS[o.kind], dashed: o.kind === 'cutout', opacity: dim ? 0.2 : 1, top: o.zTop };
     });
@@ -574,7 +576,7 @@ export function mountApp(root, host, engine) {
 
   function toolChoices(o) {
     const kinds = o.kind === 'drill' ? ['drill'] : o.kind === 'face' ? ['surfacing', 'flat'] : o.kind === 'finish3d' ? ['ball', 'flat'] : o.kind === 'chamfer' ? ['vbit', 'chamfer'] : ['flat'];
-    const list = S.tools.filter((t) => kinds.includes(t.kind)).sort((a, b) => b.diameter - a.diameter);
+    const list = S.tools.filter((t) => kinds.includes(t.kind) && (o.angle == null || Math.abs(t.angle / 2 - o.angle) <= 1.5)).sort((a, b) => b.diameter - a.diameter);
     return list.some((t) => t.id === o.tool.id) ? list : [o.tool, ...list];
   }
 

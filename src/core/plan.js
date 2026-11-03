@@ -7,7 +7,7 @@
 // stock minus the part's section just above the band's floor. Each piece of
 // that area becomes one operation: a pocket, a hole, a step, or (at the
 // bottom, around the outside) the cut-out.
-import { analyze, slice, triangleNormal, SHARE_3D } from './mesh.js';
+import { analyze, slice, triangleNormal, chamferBands, SHARE_3D } from './mesh.js';
 import { partHeights } from './sim.js';
 import * as C from './clip.js';
 import { feeds, FINISHES, tabDefaults } from './tools.js';
@@ -272,7 +272,6 @@ export function plan(mesh, tools, job, limits = {}) {
     return true;
   }
 
-  if (analysis.sloped && !did3d) warnings.push({ kind: 'sloped', text: 'Sloped or curved faces (chamfers, fillets) aren\u2019t cut in 3D yet, so they are left square.' });
 
   // 3. Bands from the top down (2.5D: everything else).
   const levels = did3d ? [] : [analysis.top, ...analysis.floors.filter((z) => z < analysis.top - EPS && z > EPS), 0];
@@ -371,61 +370,121 @@ export function plan(mesh, tools, job, limits = {}) {
     else warnings.push({ kind: 'notool', text: `No end mill is long enough to cut out the part (${L(depth)}).` });
   }
 
-  // 6. Chamfer the top edges (an option): a V-bit along each one, after the
-  // cut-out, so it runs in the cut-out's slot and in emptied pockets.
-  if (job.chamfer?.size > 0) chamferEdges();
+  // 6. Chamfers, with a V-bit along each edge after the cut-out (so it runs
+  // in the cut-out's slot and in emptied pockets): the ones drawn in the
+  // model, and (an option) every top edge of a flat face.
+  const vbits = tools.filter((t) => (t.kind === 'vbit' || t.kind === 'chamfer') && t.angle > 0 && t.angle < 180);
+  const half = (t) => (t.angle * Math.PI) / 360;
+  const deg = (a) => `${Math.round(a * 10) / 10}\u00b0`;
+  const vFits = (t, w) => t.diameter / 2 >= w + CHAMFER_OUT + 0.1 && (!t.fluteLength || t.fluteLength >= (w + CHAMFER_OUT) / Math.tan(half(t)) - 1e-6);
+  const cut = ops.find((o) => o.kind === 'cutout');
+  const slotW = cut && !job.disabled?.cutout ? cut.tool.diameter : 0;
+  // After the cut-out, the stock past its slot still stands
+  const standing = C.difference(rect(stock), C.offset(footprint, Math.max(0, slotW - 0.05)));
+  const tabTop = job.tabs.enabled ? (job.tabs.height ?? tabDefaults(job.material).height) : 0;
+  const everywhere = C.offset(rect(stock), 50);
+  // One pass: the tip on `lo`'s outline grown CHAMFER_OUT, down to zTip,
+  // only where the cone (R wide at z, the bit tr) reaches nothing else: no
+  // wall above z, no ledge past the edge below it, no standing stock; and,
+  // with `keep`, only there. null when nothing is left to cut.
+  function chamferPass({ lo, z, zTip, R, tr, which = 'all', keep = null }) {
+    if (zTip < -job.throughDepth + 0.1) return { skipped: true }; // into the spoilboard
+    const hi = z < analysis.top - EPS ? section(z + EPS) : [];
+    const under = C.cleanLoops(C.difference(section(Math.max(zTip, EPS) + EPS), C.offset(lo, 0.01)), TINY);
+    const bad = C.union([...C.offset(hi, tr + 0.1), ...C.offset(standing, tr + 0.1), ...C.offset(under, R + 0.1), ...(keep ? C.difference(everywhere, keep) : [])]);
+    const loops = [];
+    let skipped = false;
+    // Outside edges: the tip must stay above the tabs (the slot goes deeper)
+    const outerOk = zTip > Math.max(EPS, tabTop + 0.2) || (!job.tabs.enabled && zTip > -job.throughDepth + 0.1);
+    for (const [outer, ...holes] of C.regions(C.offsetMiter(lo, CHAMFER_OUT))) {
+      if (which !== 'inside') { if (outerOk) loops.push(outer); else skipped = true; }
+      if (which !== 'outside') loops.push(...holes);
+    }
+    // Only loops with something to cut: a stretch of 0.5 mm clear of `bad`
+    const inBad = (q) => { let w = 0; for (const l of bad) if (C.pointInLoop(q, l)) w += C.loopArea(l) > 0 ? 1 : -1; return w > 0; };
+    const cuts = loops.filter((l) => {
+      let run = 0;
+      for (let i = 0; i < l.length; i++) {
+        const a = l[i], b = l[(i + 1) % l.length], len = Math.hypot(b[0] - a[0], b[1] - a[1]), k = Math.max(1, Math.ceil(len / 0.25));
+        for (let j = 0; j < k; j++) {
+          if (inBad([a[0] + ((b[0] - a[0]) * j) / k, a[1] + ((b[1] - a[1]) * j) / k])) run = 0;
+          else if ((run += len / k) >= 0.5) return true;
+        }
+      }
+      return false;
+    });
+    return cuts.length ? { pass: { z, depth: z - zTip, loops: cuts, bad }, skipped } : { skipped };
+  }
 
-  function chamferEdges() {
+  // Drawn in the model: each band of one slope, by the V-bit of that angle
+  let chamferArea = 0;
+  if (!did3d && analysis.sloped) {
+    const byAngle = new Map();
+    for (const band of chamferBands(mesh)) {
+      chamferArea += band.area; // found: said below whether it's cut
+      const key = Math.round(band.angle * 2) / 2;
+      if (!byAngle.has(key)) byAngle.set(key, []);
+      byAngle.get(key).push(band);
+    }
+    for (const [angle, bands] of byAngle) {
+      const wide = Math.max(...bands.map((b) => b.w));
+      const fit = vbits.filter((t) => Math.abs(t.angle / 2 - angle) <= 1.5);
+      const picked = tools.find((t) => t.id === job.toolOverride?.[`chamfers${angle}`] && fit.includes(t));
+      const tool = picked || fit.filter((t) => vFits(t, wide)).sort((a, b) => a.diameter - b.diameter)[0];
+      const what = `${deg(angle)} chamfer${bands.length > 1 ? 's' : ''}`;
+      if (!tool) {
+        warnings.push({ kind: 'chamfer', text: fit.length ? `The ${what} ${bands.length > 1 ? 'are' : 'is'} wider than any ${deg(angle * 2)} V-bit in your Tool Library can cut, so ${bands.length > 1 ? 'they stay' : 'it stays'} square.` : `The ${what} need${bands.length > 1 ? '' : 's'} a ${deg(angle * 2)} V-bit, so ${bands.length > 1 ? 'they stay' : 'it stays'} square. Add one to your Tool Library.` });
+        continue;
+      }
+      const passes = [], show = [];
+      let skipped = false;
+      for (const band of bands) {
+        const loops = [];
+        for (const t of band.tris) {
+          const v = [0, 1, 2].map((k) => { const i = mesh.indices[t * 3 + k] * 3; return [mesh.positions[i], mesh.positions[i + 1]]; });
+          loops.push(C.loopArea(v) < 0 ? v.reverse() : v);
+        }
+        const seen = C.unionMany(loops);
+        const where = C.offset(seen, CHAMFER_OUT + 0.3);
+        // The wall's top, where the chamfer starts
+        const lo = C.cleanLoops(C.unionEvenOdd(slice(mesh, band.zb + Math.min(EPS, band.h / 4))), TINY);
+        const r = chamferPass({ lo, z: band.zt, zTip: band.zb - CHAMFER_OUT / Math.tan(half(tool)), R: band.w + CHAMFER_OUT, tr: tool.diameter / 2, keep: where });
+        skipped ||= r.skipped;
+        if (r.pass) { passes.push(r.pass); show.push({ z: band.zt, loops: seen }); }
+      }
+      if (skipped) warnings.push({ kind: 'chamfer', text: `Some ${what} are too low to cut without reaching the tabs or the spoilboard.` });
+      if (!passes.length) continue;
+      add({ id: `chamfers${angle}`, kind: 'chamfer', label: 'Cut the chamfers', tool: take(tool), zTop: analysis.top, zBottom: Math.min(...passes.map((l) => l.z - l.depth)), region: footprint, levels: passes, show, angle, count: bands.length, size: wide, detail: `${bands.length} chamfer${bands.length > 1 ? 's' : ''} \u00b7 ${L(wide)} wide \u00b7 ${deg(angle * 2)} bit` });
+    }
+  }
+  // Sloped faces besides the chamfers (fillets, curves): what 3D is for
+  const curved = analysis.sloped && analysis.slopedArea - chamferArea > 1e-3 * (analysis.slopedArea / Math.max(analysis.slopedShare, 1e-9));
+  if (curved && !did3d) warnings.push({ kind: 'sloped', text: chamferArea > 0 ? 'Other sloped or curved faces (fillets) aren\u2019t cut in 3D, so they are left square.' : 'Sloped or curved faces (chamfers, fillets) aren\u2019t cut in 3D yet, so they are left square.' });
+
+  // The option: every top edge of a flat face, chamfered `size` wide
+  if (job.chamfer?.size > 0) {
     const w = job.chamfer.size, which = job.chamfer.edges || 'all';
-    if (did3d) { warnings.push({ kind: 'chamfer', text: 'Edges aren\u2019t chamfered on parts cut in 3D.' }); return; }
-    const vbits = tools.filter((t) => (t.kind === 'vbit' || t.kind === 'chamfer') && t.angle > 0 && t.angle < 180);
-    // How deep the tip goes for this chamfer (it runs CHAMFER_OUT outside the
-    // edge, where the cone is stronger) and the cone's width there
-    const tipDepth = (t) => (w + CHAMFER_OUT) / Math.tan((t.angle * Math.PI) / 360);
-    const fitsW = (t) => t.diameter / 2 >= w + CHAMFER_OUT + 0.1 && (!t.fluteLength || t.fluteLength >= tipDepth(t) - 1e-6);
     const picked = tools.find((t) => t.id === job.toolOverride?.chamfer && vbits.includes(t));
     // A 90° bit makes the usual 45° chamfer; else the angle nearest to it
-    const tool = picked || vbits.filter(fitsW).sort((a, b) => Math.abs(a.angle - 90) - Math.abs(b.angle - 90) || a.diameter - b.diameter)[0];
-    if (!tool) {
-      warnings.push({ kind: 'chamfer', text: vbits.length ? `No V-bit in your Tool Library is wide enough for a ${L(w)} chamfer.` : 'Chamfering the edges needs a V-bit in your Tool Library.' });
-      return;
-    }
-    const depth = tipDepth(tool), R = w + CHAMFER_OUT, tr = tool.diameter / 2;
-    // After the cut-out, the stock beyond its slot still stands
-    const cut = ops.find((o) => o.kind === 'cutout');
-    const slot = cut && !job.disabled?.cutout ? cut.tool.diameter : 0;
-    const standing = C.difference(rect(stock), C.offset(footprint, Math.max(0, slot - 0.05)));
-    const tabTop = job.tabs.enabled ? (job.tabs.height ?? tabDefaults(job.material).height) : 0;
-    const levels = [analysis.top, ...analysis.floors.filter((z) => z < analysis.top - EPS && z > EPS)];
-    const out = [];
-    let length = 0, skipped = 0;
-    for (const z of levels) {
-      const zTip = z - depth;
-      // The material whose top edge is at z, and what stands above it
-      const lo = C.cleanLoops(C.unionEvenOdd(slice(mesh, z - EPS)), TINY);
-      const hi = z < analysis.top - EPS ? section(z + EPS) : [];
-      if (!lo.length) continue;
-      // The cone must reach nothing but the chamfer: no wall above (the bit's
-      // full width from it), no ledge below the edge sticking out within the
-      // cone, nothing under the tip
-      if (zTip < -job.throughDepth + 0.1) { skipped++; continue; } // into the spoilboard
-      const under = C.cleanLoops(C.difference(section(Math.max(zTip, EPS) + EPS), C.offset(lo, 0.01)), TINY);
-      const bad = C.union([...C.offset(hi, tr + 0.1), ...C.offset(standing, tr + 0.1), ...C.offset(under, R + 0.1)]);
-      const loops = [];
-      for (const region of C.regions(C.offsetMiter(lo, CHAMFER_OUT))) {
-        const [outer, ...holes] = region;
-        // Under the tip: a hole or the cut-out's slot must go deeper than it
-        const outerOk = zTip > Math.max(EPS, tabTop + 0.2) || (zTip > -job.throughDepth + 0.2 && !job.tabs.enabled);
-        if (which !== 'inside') { if (outerOk) loops.push(outer); else skipped++; }
-        if (which !== 'outside') for (const hole of holes) loops.push(hole);
+    const tool = picked || vbits.filter((t) => vFits(t, w)).sort((a, b) => Math.abs(a.angle - 90) - Math.abs(b.angle - 90) || a.diameter - b.diameter)[0];
+    if (!tool) warnings.push({ kind: 'chamfer', text: vbits.length ? `No V-bit in your Tool Library is wide enough for a ${L(w)} chamfer.` : 'Chamfering the edges needs a V-bit in your Tool Library.' });
+    else {
+      const depth = (w + CHAMFER_OUT) / Math.tan(half(tool));
+      // Flat faces: every floor in 2.5D; in 3D only real ones, not a mesh's stray flat triangles
+      const levels = [analysis.top, ...analysis.floors.filter((z) => z < analysis.top - EPS && z > EPS && (!did3d || (analysis.floorAreas[z] || 0) >= FLOOR_3D))];
+      const passes = [];
+      let skipped = false;
+      for (const z of levels) {
+        const lo = C.cleanLoops(C.unionEvenOdd(slice(mesh, z - EPS)), TINY);
+        if (!lo.length) continue;
+        const r = chamferPass({ lo, z, zTip: z - depth, R: w + CHAMFER_OUT, tr: tool.diameter / 2, which });
+        skipped ||= r.skipped;
+        if (r.pass) passes.push(r.pass);
       }
-      if (!loops.length) continue;
-      out.push({ z, depth, loops, bad });
-      length += loops.reduce((sum, l) => sum + C.loopLength(l), 0);
+      if (skipped) warnings.push({ kind: 'chamfer', text: `Some edges are too low to chamfer ${L(w)} without cutting the tabs or the spoilboard.` });
+      if (!passes.length) warnings.push({ kind: 'chamfer', text: `No ${chamferArea > 0 ? 'other ' : ''}edge can take a ${L(w)} chamfer with ${tool.name}.` });
+      else add({ id: 'chamfer', kind: 'chamfer', label: 'Chamfer the edges', tool: take(tool), zTop: analysis.top, zBottom: Math.min(...passes.map((l) => l.z - l.depth)), region: footprint, levels: passes, show: passes.map((l) => ({ z: l.z, loops: l.loops })), size: w, detail: `${L(w)} wide \u00b7 ${Math.round(tool.angle)}\u00b0 bit \u00b7 ${{ all: 'all edges', outside: 'outside edges', inside: 'pockets and holes' }[which]}` });
     }
-    if (skipped) warnings.push({ kind: 'chamfer', text: `Some edges are too low to chamfer ${L(w)} without cutting the tabs or the spoilboard.` });
-    if (!out.length) { warnings.push({ kind: 'chamfer', text: `No edge can take a ${L(w)} chamfer with ${tool.name}.` }); return; }
-    add({ id: 'chamfer', kind: 'chamfer', label: 'Chamfer the edges', tool: take(tool), zTop: analysis.top, zBottom: Math.min(...out.map((l) => l.z - l.depth)), region: footprint, levels: out, size: w, detail: `${L(w)} wide · ${Math.round(tool.angle)}\u00b0 bit · ${{ all: 'all edges', outside: 'outside edges', inside: 'pockets and holes' }[which]}` });
   }
 
   // The same pocket more than once (five slots) is one operation over all
@@ -457,7 +516,7 @@ export function plan(mesh, tools, job, limits = {}) {
     // The part's top on a grid fine enough for the finishing tool
     if (op.kind === 'finish3d') op.surface = surfaceGrid(mesh, stock, Math.min(0.2, op.tool.diameter / 16));
   }
-  return { analysis, stock, zero: zeroPoint(stock, job.zero), ops: order(ops), warnings, job, mode3d: use3d, did3d };
+  return { analysis, stock, zero: zeroPoint(stock, job.zero), ops: order(ops), warnings, job, mode3d: use3d, did3d, curved };
 }
 
 // Flatten first and cut out last. In between, an operation waits for any

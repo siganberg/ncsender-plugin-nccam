@@ -110,9 +110,11 @@ test('upside down, the pocket faces away and is reported', async () => {
   assert.ok(p.warnings.some((w) => w.kind === 'undercut'));
 });
 
-test('a chamfer is reported as not cut in 3D', async () => {
+test('a chamfer in the model with no V-bit of its angle is reported, left square', async () => {
+  // The library's only V-bit is 60°: a 45° chamfer needs a 90° one
   const { p } = await make('chamfered.step');
-  assert.ok(p.warnings.some((w) => w.kind === 'sloped'));
+  assert.ok(p.warnings.some((w) => w.kind === 'chamfer' && /90° V-bit/.test(w.text)));
+  assert.ok(!p.ops.some((o) => o.kind === 'chamfer'));
 });
 
 test('G-code: ASCII, tool changes, work coordinates', async () => {
@@ -788,4 +790,62 @@ test('resizing goes along the axes of the part as it sits, and stays with it whe
   assert.deepEqual(size(r), [10, 20, 30]);
   await again({ type: 'load', bytes: new TextEncoder().encode(txt), name: 'box.stl', scale: [2, 1, 1] });
   assert.deepEqual(size(await again({ type: 'orient', up: 'top' })), [20, 20, 30]);
+});
+
+// How much of the part's top is left uncut or cut into, on a 0.1 mm grid
+function leftAndGouged(mesh, p) {
+  const { hm, collisions } = N.simulate(p, 0.1);
+  const ph = N.partHeights(mesh, hm);
+  const low = (i) => Math.min(ph[i], ...[i - 1, i + 1, i - hm.nx, i + hm.nx, i - hm.nx - 1, i - hm.nx + 1, i + hm.nx - 1, i + hm.nx + 1].filter((k) => k >= 0 && k < ph.length).map((k) => ph[k]));
+  let left = 0, gouged = 0;
+  for (let i = 0; i < ph.length; i++) {
+    if (ph[i] === -Infinity || low(i) === -Infinity) continue;
+    left = Math.max(left, hm.h[i] - ph[i]);
+    gouged = Math.max(gouged, Math.min(ph[i], low(i)) - hm.h[i]);
+  }
+  return { left, gouged, collisions: collisions.length };
+}
+
+test('chamfers drawn in the model are found and cut with a V-bit of their angle', async () => {
+  for (const [file, count, width] of [['chamfered.step', 1, 2], ['onshape-plate.step', 6, 1]]) {
+    const bands = N.chamferBands(N.orient(await loadStep(file), 'top'));
+    assert.equal(bands.length, count, file);
+    assert.ok(bands.every((b) => Math.abs(b.angle - 45) < 0.5 && Math.abs(b.w - width) < 0.05), file);
+    const { mesh, p } = await make(file, (j) => j, VLIB);
+    const op = p.ops.find((o) => o.kind === 'chamfer');
+    assert.equal(op.tool.name, '90 Deg V-bit', file);
+    assert.equal(p.ops.at(-1), op, file);
+    assert.ok(!p.warnings.some((w) => w.kind === 'sloped' || w.kind === 'chamfer'), file);
+    const r = leftAndGouged(mesh, p);
+    assert.equal(r.collisions, 0, file);
+    assert.ok(r.left < 0.05, `${file}: ${r.left} mm left`);
+    assert.ok(r.gouged < 0.05, `${file}: ${r.gouged} mm into the part`);
+    // Off, the chamfer stays square
+    const off = await make(file, (j) => ({ ...j, disabled: { [op.id]: true } }), VLIB);
+    assert.ok(leftAndGouged(off.mesh, off.p).left > width * 0.9, file);
+  }
+  // No chamfers in a part without them
+  for (const f of ['bracket.step', 'stepped.step', 'plate.step']) assert.equal(N.chamferBands(N.orient(await loadStep(f), 'top')).length, 0, f);
+  // A fillet isn't a chamfer
+  assert.equal(N.chamferBands(N.orient(domeOnPlinth(), 'top')).length, 0);
+});
+
+test('chamfering the edges skips edges the model already chamfers', async () => {
+  const { p } = await make('chamfered.step', (j) => ({ ...j, chamfer: { size: 1 } }), VLIB);
+  assert.deepEqual(p.ops.filter((o) => o.kind === 'chamfer').map((o) => o.label), ['Cut the chamfers']);
+  assert.ok(p.warnings.some((w) => w.kind === 'chamfer' && /No other edge/.test(w.text)));
+});
+
+test('chamfering the edges works on the flat faces of a part cut in 3D', () => {
+  const lib = N.normalizeTools([...LIBRARY, { id: 9, toolId: 9, name: 'ball', type: 'ball', diameter: 6.35 }, { id: 10, toolId: 10, name: '90 Deg V-bit', type: 'v-bit', diameter: 6.35, dimensions: { taper_angle: 45 } }]);
+  const mesh = N.orient(domeOnPlinth(), 'top');
+  const p = N.toolpaths(N.plan(mesh, lib, { ...N.defaultJob(N.analyze(mesh)), surface3d: true, chamfer: { size: 1 } }));
+  assert.ok(p.did3d);
+  const op = p.ops.find((o) => o.kind === 'chamfer');
+  // The plinth's square top edge, all the way round
+  assert.ok(op && op.levels.length === 1 && op.levels[0].z === 4);
+  assert.ok(op.moves.filter((m) => !m.r && Math.abs(m.z - op.levels[0].z + op.levels[0].depth) < 1e-6).length >= 4);
+  const r = chamferCheck(mesh, p, 1);
+  assert.equal(r.collisions, 0);
+  assert.equal(r.over, 0);
 });

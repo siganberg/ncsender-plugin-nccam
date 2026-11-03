@@ -134,6 +134,83 @@ export function analyze(mesh, tol = 1e-3) {
 
 const MISSED_LIMIT = 0.05;
 
+// Chamfers drawn in the model: connected upward faces all at one slope (a
+// flat band along an edge, or a cone round a hole), between two heights and
+// no wider than CHAMFER_WIDEST. A fillet's slope keeps changing, so it isn't
+// one. Each: angle (from vertical, as a V-bit's half angle), bottom and top
+// heights, width, its triangles and their area.
+const CHAMFER_WIDEST = 12;
+export function chamferBands(mesh) {
+  const p = mesh.positions, ix = mesh.indices, nTri = ix.length / 3;
+  const nz = new Float64Array(nTri).fill(NaN);
+  // A cone's facets lean a degree or so either way of its true slope
+  const slopeTol = Math.sin((1.5 * Math.PI) / 180);
+  for (let t = 0; t < nTri; t++) {
+    const n = triangleNormal(mesh, t);
+    if (n[2] > 0.17 && n[2] < 0.985) nz[t] = n[2]; // 10° to 80° from flat
+  }
+  // Triangles at the same slope that share a corner are one band
+  const parent = Array.from({ length: nTri }, (_, i) => i);
+  const find = (i) => { while (parent[i] !== i) i = parent[i] = parent[parent[i]]; return i; };
+  const byPoint = new Map(), around = new Map(); // corner -> sloped triangles; -> all
+  const keyOf = (v) => `${Math.round(p[v] * 1e4)},${Math.round(p[v + 1] * 1e4)},${Math.round(p[v + 2] * 1e4)}`;
+  for (let t = 0; t < nTri; t++) for (let k = 0; k < 3; k++) {
+    const key = keyOf(ix[t * 3 + k] * 3);
+    const list = around.get(key);
+    if (list) list.push(t); else around.set(key, [t]);
+  }
+  for (let t = 0; t < nTri; t++) {
+    if (Number.isNaN(nz[t])) continue;
+    for (let k = 0; k < 3; k++) {
+      const v = ix[t * 3 + k] * 3;
+      const key = `${Math.round(p[v] * 1e4)},${Math.round(p[v + 1] * 1e4)},${Math.round(p[v + 2] * 1e4)}`;
+      const list = byPoint.get(key);
+      if (list) list.push(t); else byPoint.set(key, [t]);
+    }
+  }
+  for (const list of byPoint.values()) {
+    list.sort((a, b) => nz[a] - nz[b]);
+    for (let k = 1; k < list.length; k++) if (nz[list[k]] - nz[list[k - 1]] < slopeTol) parent[find(list[k])] = find(list[k - 1]);
+  }
+  const groups = new Map();
+  for (let t = 0; t < nTri; t++) {
+    if (Number.isNaN(nz[t])) continue;
+    const g = find(t);
+    if (!groups.has(g)) groups.set(g, []);
+    groups.get(g).push(t);
+  }
+  const out = [];
+  for (const tris of groups.values()) {
+    let lo = Infinity, hi = -Infinity, nMin = Infinity, nMax = -Infinity, area = 0;
+    for (const t of tris) {
+      nMin = Math.min(nMin, nz[t]); nMax = Math.max(nMax, nz[t]);
+      const a = ix[t * 3] * 3, b = ix[t * 3 + 1] * 3, c = ix[t * 3 + 2] * 3;
+      for (const v of [a, b, c]) { lo = Math.min(lo, p[v + 2]); hi = Math.max(hi, p[v + 2]); }
+      area += Math.abs((p[b] - p[a]) * (p[c + 1] - p[a + 1]) - (p[c] - p[a]) * (p[b + 1] - p[a + 1])) / 2 / nz[t];
+    }
+    if (nMax - nMin > 2 * slopeTol) continue; // curving: a fillet or a 3D shape
+    // A chamfer meets flat and vertical faces only; a ring of a dome or a
+    // fillet's facets meet other slopes
+    const mine = new Set(tris);
+    let alone = true;
+    for (const t of tris) {
+      for (let k = 0; k < 3 && alone; k++) for (const u of around.get(keyOf(ix[t * 3 + k] * 3))) {
+        if (mine.has(u)) continue;
+        const z = triangleNormal(mesh, u)[2];
+        if (Math.abs(z) < 0.985 && Math.abs(z) > 0.03) { alone = false; break; }
+      }
+      if (!alone) break;
+    }
+    if (!alone) continue;
+    const nzm = (nMin + nMax) / 2;
+    const angle = (Math.asin(nzm) * 180) / Math.PI; // from vertical: 90° less the slope
+    const h = hi - lo, w = h * Math.tan((angle * Math.PI) / 180);
+    if (h < 0.1 || w > CHAMFER_WIDEST) continue;
+    out.push({ angle, zb: lo, zt: hi, h, w, tris, area });
+  }
+  return out;
+}
+
 export function meshVolume(mesh) {
   const p = mesh.positions, ix = mesh.indices;
   let v = 0;
