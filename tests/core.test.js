@@ -956,6 +956,37 @@ test('a hole too tight to spiral: a pilot drill, then an end mill no wider than 
   assert.ok(rmax > 4.9 && rmax < 5.08, `cut out to r ${rmax}`);
 });
 
+test('a through hole no end mill reaches through: a pilot drill breaks through, an end mill as long as the part rounds it', async () => {
+  // bracket.step's Ø10 holes, an 8 mm drill and a 6 mm end mill just as long as the part is thick
+  const mesh0 = N.orient(await loadStep('bracket.step'), 'top');
+  const top = N.analyze(mesh0).top;
+  const lib = N.normalizeTools([
+    { id: 20, toolId: 20, name: '8 mm drill', type: 'drill', diameter: 8, dimensions: { flute_length: 40 } },
+    { id: 21, toolId: 21, name: '6 mm end mill', type: 'flat', diameter: 6, dimensions: { flute_length: top } },
+    { id: 22, toolId: 22, name: '1/2" end mill', type: 'flat', diameter: 12.7, dimensions: { flute_length: 40 } },
+  ]);
+  const { mesh, p } = await make('bracket.step', (j) => j, lib);
+  const pilot = p.ops.find((o) => o.kind === 'drill' && o.pilot);
+  const bore = p.ops.find((o) => o.kind === 'hole' && o.bore);
+  assert.ok(pilot && bore && bore.after === pilot.id && bore.tool.name === '6 mm end mill' && pilot.tool.name === '8 mm drill');
+  assert.ok(pilot.zBottom < 0 && Math.abs(bore.zBottom) < 1e-6, `pilot ${pilot.zBottom}, bore ${bore.zBottom}`);
+  assert.ok(p.warnings.some((w) => w.kind === 'drill' && /part's bottom/.test(w.text)));
+  assert.ok(!p.warnings.some((w) => w.kind === 'notool'));
+  assert.equal(N.simulate(p, 0.1).collisions.length, 0);
+  // Ø10 through the part: cut down to its bottom out to 5 mm, not past
+  const { hm } = N.simulate(p, 0.05);
+  const c = bore.centers[0];
+  let rmax = 0;
+  for (let i = 0; i < hm.h.length; i++) {
+    const x = hm.x0 + (i % hm.nx) * hm.cell, y = hm.y0 + Math.floor(i / hm.nx) * hm.cell, r = Math.hypot(x - c.x, y - c.y);
+    if (r < 7 && hm.h[i] < 0.05) rmax = Math.max(rmax, r);
+  }
+  assert.ok(rmax > 4.9 && rmax < 5.08, `cut out to r ${rmax}`);
+  // Without the drill: no tool, as before
+  const { p: none } = await make('bracket.step', (j) => j, lib.filter((t) => t.kind !== 'drill'));
+  assert.ok(none.warnings.some((w) => w.kind === 'notool' && /Ø/.test(w.text)));
+});
+
 // A W x W x H block with a through hole threaded inside: minor diameter
 // dMin, thread depth t, pitch P (hand: 1 right, -1 left)
 function threadedBlock({ W = 20, H = 8, dMin = 6.65, t = 0.68, P = 1.25, hand = 1, n = 120 } = {}) {

@@ -369,10 +369,20 @@ export function plan(mesh, tools, job, limits = {}) {
     // With a pilot the end mill needs no room to spiral down: any a little
     // smaller than the hole (and no wider than the pilot, so it drops in)
     // rounds it to size
-    const borer = !tool && near ? flats.find((t) => t.diameter < h.d - 0.02 && t.diameter <= near.diameter + 0.05 && fluteOk(t, depth)) : null;
+    let borer = !tool && near ? flats.find((t) => t.diameter < h.d - 0.02 && t.diameter <= near.diameter + 0.05 && fluteOk(t, depth)) : null;
+    let pilotDrill = near, bottom = h.zBottom;
+    // A through hole no end mill reaches through: a drill pilots it all the
+    // way (the break-through too), then an end mill long enough for the part
+    // itself, no wider than the pilot, rounds it to size down to its bottom
+    if (!tool && !borer && h.through) {
+      const pd = drills.filter((t) => t.diameter < h.d - 0.05 && fluteOk(t, depth)).sort((a, b) => b.diameter - a.diameter)[0];
+      const em = pd && flats.find((t) => t.diameter < h.d - 0.02 && t.diameter <= pd.diameter + 0.05 && fluteOk(t, h.zTop));
+      if (em) { borer = em; pilotDrill = pd; bottom = Math.max(h.zBottom, h.zTop - (em.fluteLength || Infinity)); }
+    }
     if (borer) {
-      const pilot = drillOp(near, n > 1 ? `Drill ${n} pilot holes` : 'Drill a pilot hole', `${what} · then ${L(h.d)} with an end mill`, { pilot: true });
-      return add({ kind: 'hole', label: n > 1 ? `Cut ${n} holes to size` : 'Cut the hole to size', tool: take(borer), zTop: h.zTop, zBottom: h.zBottom, region, centers: h.centers, bore: true, after: pilot.id, detail: `${what} · from the pilot` });
+      const pilot = drillOp(pilotDrill, n > 1 ? `Drill ${n} pilot holes` : 'Drill a pilot hole', `${what} · then ${L(h.d)} with an end mill`, { pilot: true });
+      if (bottom > h.zBottom + 1e-6) warnings.push({ kind: 'drill', text: `${n > 1 ? `The ${n} ${what} holes are` : `The ${what} hole is`} cut to size down to the part's bottom with ${borer.name} (too short to break through; the pilot does): check the bottom edge for fuzz.` });
+      return add({ kind: 'hole', label: n > 1 ? `Cut ${n} holes to size` : 'Cut the hole to size', tool: take(borer), zTop: h.zTop, zBottom: bottom, region, centers: h.centers, bore: true, after: pilot.id, detail: `${what} · from the pilot` });
     }
     if (!tool) {
       if (!near) { warnings.push({ kind: 'notool', text: `No drill or end mill fits the ${what} hole${n > 1 ? 's' : ''}.` }); return null; }
