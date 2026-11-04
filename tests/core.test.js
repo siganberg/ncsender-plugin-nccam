@@ -39,6 +39,16 @@ test('bracket: pocket, corners, two through holes, cut-out', async () => {
   assert.equal(r.gouges, 0);
 });
 
+test('keyhole and roundover bits filed as flat are never picked as end mills', async () => {
+  const lib = N.normalizeTools([...LIBRARY,
+    { id: 20, toolId: 20, name: '3/8in keyhole .25 shank', type: 'flat', diameter: 9.525 },
+    { id: 21, toolId: 21, name: 'Radius 6.35mm Roundover Bit', type: 'flat', diameter: 12.7 },
+    { id: 22, toolId: 22, name: 'Cove Box Router Bit', type: 'ball', diameter: 19.05 }]);
+  assert.deepEqual(lib.filter((t) => t.id >= 20).map((t) => t.kind), ['profile', 'profile', 'profile']);
+  const { p } = await make('bracket.step', undefined, lib);
+  assert.ok(p.ops.every((o) => o.tool.id < 20), p.ops.map((o) => o.tool.name).join(', '));
+});
+
 test('bracket: the pocket and holes are cut to size', async () => {
   const { mesh, p } = await make('bracket.step');
   const { hm, ph } = check(mesh, p);
