@@ -9,7 +9,12 @@ An ncSender plugin that turns a STEP part into G-code.
    Switch any off or pick another tool; choose Fast, Balanced or Smooth.
 4. **Preview & Load**: the cut plays on a model of the stock as material is removed,
    with checks (fast moves into material, machine travel, tool length). Load it into
-   ncSender or save it to the File Manager.
+   ncSender; with **Save to File Manager** on (remembered, as in QuickCut) it's also
+   saved to File Manager › ncCAM.
+
+Length fields take any unit, whatever the machine uses: `1/4"`, `6mm`, `1-1/2 in`,
+or a sum like `12mm+1/4"` ([ncsender-unit-input](https://github.com/tmuka/ncsender-unit-input)).
+Up/Down step the value (Shift 10, Alt 0.1).
 
 ## What it cuts
 

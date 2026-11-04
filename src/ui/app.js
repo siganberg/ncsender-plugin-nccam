@@ -3,6 +3,7 @@ import { Color } from 'three';
 import * as N from '../core/index.js';
 import { Viewer, OP_COLORS, STOCK_COLORS } from './viewer.js';
 import * as store from './store.js';
+import { wireUnitFields, textToMm, formatMm } from 'ncsender-unit-input';
 
 const STEPS = ['Model', 'Stock & Zero', 'Operations', 'Preview & Load'];
 const SIDES = [['top', 'Top'], ['bottom', 'Bottom'], ['front', 'Front'], ['back', 'Back'], ['left', 'Left'], ['right', 'Right']];
@@ -53,7 +54,13 @@ export function mountApp(root, host, engine) {
   const api = {
     get: async (p) => { const r = await fetch(host.base + p); if (!r.ok) throw new Error(`${p}: ${r.status}`); return r.json(); },
     post: (p, body) => fetch(host.base + p, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }),
+    put: (p, body) => fetch(host.base + p, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }),
   };
+  // ncSender keeps the plugin's settings (Save to File Manager's switch, as
+  // QuickCut keeps its own); a PUT replaces them all
+  const SETTINGS = '/api/plugins/com.ncsender.nccam/settings';
+  let prefs = {};
+  const savePrefs = (patch) => { prefs = { ...prefs, ...patch }; return api.put(SETTINGS, prefs).catch((e) => console.warn('[ncCAM] settings save failed:', e)); };
 
   const S = {
     step: 1, maxStep: 1,
@@ -73,16 +80,24 @@ export function mountApp(root, host, engine) {
   // Sizes in the user's units (ncSender's Units setting); mm inside
   const n = (v, d) => N.units.num(v, S.units, d);
   const L = (v, d) => N.units.len(v, S.units, d);
+  // Length fields take any unit (1/4", 6mm, 1in+4mm: ncsender-unit-input,
+  // as QuickCut): shown and read in the machine's units, kept in mm
+  const imperial = () => S.units === 'in';
+  const fmt = (mm) => formatMm(mm, imperial());
+  const mmOf = (t) => { const v = textToMm(String(t.value).replace(/^(\d+),(\d+)$/, '$1.$2'), imperial()); return v != null && Number.isFinite(v) && v > 0 ? v : null; };
   let planSeq = 0;
 
   // ---------- startup ----------
   (async () => {
-    const [settings, tools, fw, state] = await Promise.all([
+    const [settings, tools, fw, state, mine] = await Promise.all([
       api.get('/api/settings').catch(() => ({})),
       api.get('/api/tools').catch(() => []),
       api.get('/api/firmware').catch(() => null),
       api.get('/api/server-state').catch(() => null),
+      api.get(SETTINGS).catch(() => null),
     ]);
+    prefs = mine && typeof mine === 'object' ? mine : {};
+    S.saveToFm = !!prefs.saveToFileManager;
     S.units = N.units.unitsFrom(settings?.unitsPreference);
     S.numbering = settings?.tool?.numbering === 'toolId' ? 'toolId' : 'slot';
     S.slots = Math.max(0, Number(settings?.tool?.count) || 0);
@@ -422,7 +437,7 @@ export function mountApp(root, host, engine) {
   // The part's size in the file's X, Y, Z: typed in, together or each alone
   function sizeCard() {
     if (!S.fileSize || !S.analysis) return '';
-    const val = (k) => { const v = S.analysis.size[k]; return S.units === 'in' ? Math.round((v / N.units.INCH) * 1000) / 1000 : Math.round(v * 100) / 100; };
+    const val = (k) => fmt(S.analysis.size[k]);
     // The resize along the machine's axes as the part sits now
     const M = S.scale || [1, 0, 0, 0, 1, 0, 0, 0, 1], R = S.rot || [1, 0, 0, 0, 1, 0, 0, 0, 1];
     const mul = (a, b) => Array.from({ length: 9 }, (_, k) => a[(k / 3 | 0) * 3] * b[k % 3] + a[(k / 3 | 0) * 3 + 1] * b[3 + k % 3] + a[(k / 3 | 0) * 3 + 2] * b[6 + k % 3]);
@@ -435,7 +450,7 @@ export function mountApp(root, host, engine) {
     const inches = S.meshKind === 'stl' && !scaled && Math.max(...S.fileSize) < 12;
     return `<div class="ncc-card">
         ${toggleRow('lock', 'Keep the proportions', !scaled ? 'As in the file' : same ? `Scaled to ${pct[0]}` : even ? `Scaled ${pct.join(' \u00d7 ')}` : 'Stretched', S.lock)}
-        <div class="ncc-fields">${['X', 'Y', 'Z'].map((a, k) => `<div class="ncc-field"><label for="ncc-size${k}">${a} (${S.units})</label><input id="ncc-size${k}" class="ncc-input ncc-mono" inputmode="decimal" data-size="${k}" value="${val(k)}"></div>`).join('')}</div>
+        <div class="ncc-fields">${['X', 'Y', 'Z'].map((a, k) => `<div class="ncc-field"><label for="ncc-size${k}">${a} (${S.units})</label><input id="ncc-size${k}" class="ncc-input ncc-mono" type="text" data-unit="length" data-min="0" autocomplete="off" spellcheck="false" data-size="${k}" value="${val(k)}"></div>`).join('')}</div>
         <div class="ncc-row-sub">The part as it sits now, side up chosen: Z is its height.${scaled ? ' <button type="button" class="ncc-link" data-scale="reset">Back to the file\u2019s size</button>' : ''}</div>
         ${inches ? `<div class="ncc-hint">${ICONS.info}<span>Only ${n(Math.max(...S.fileSize))} across: STL files have no unit, so this may have been drawn in inches. <button type="button" class="ncc-link" data-scale="inch">Make it inches (\u00d7 25.4)</button></span></div>` : ''}
       </div>`;
@@ -516,7 +531,7 @@ export function mountApp(root, host, engine) {
   function stepStock() {
     const j = S.job, st = S.plan?.stock || N.stockBox(S.analysis, j);
     const mats = Object.entries(N.MATERIALS).map(([k, m]) => `<button class="ncc-pick ncc-mat ${j.material === k ? 'sel' : ''}" type="button" data-material="${k}"><span class="ncc-mat-swatch" style="background: ${STOCK_COLORS[k]}"></span>${esc(m.name)}<small>${esc(m.note)}</small></button>`).join('');
-    const field = (key, label, value) => `<div class="ncc-field"><label for="ncc-${key}">${label}</label><input id="ncc-${key}" class="ncc-input ncc-mono" inputmode="decimal" data-stock="${key}" value="${S.units === 'in' ? Math.round(value / N.units.INCH * 1000) / 1000 : Math.round(value * 100) / 100}" ${j.stock.fit ? 'disabled' : ''}></div>`;
+    const field = (key, label, value) => `<div class="ncc-field"><label for="ncc-${key}">${label}</label><input id="ncc-${key}" class="ncc-input ncc-mono" type="text" data-unit="length" data-min="0" autocomplete="off" spellcheck="false" data-stock="${key}" value="${fmt(value)}" ${j.stock.fit ? 'disabled' : ''}></div>`;
     // Two even columns: what the stock is on the left, where zero is on the right
     return `
       <div class="ncc-col ncc-half">
@@ -689,7 +704,7 @@ export function mountApp(root, host, engine) {
         ${S.slow ? `<div class="ncc-hint">${ICONS.info}<span>${esc(S.slow)}</span></div>` : ''}
         <div class="ncc-card">
           <div class="ncc-mono ncc-row-sub" style="margin: 0">${esc(programName())}${r ? ` · ${(r.gcode.split('\n').length - 1).toLocaleString()} lines` : ''}</div>
-          <button class="ncc-btn muted" type="button" data-act="save" ${r ? '' : 'disabled'}>Save to File Manager</button>
+          <div class="ncc-row" title="Also save each program you load to File Manager › ncCAM"><div class="ncc-row-text"><div class="ncc-row-title">Save to File Manager</div><div class="ncc-row-sub">${S.saveToFm ? 'Load into ncSender also saves it in ncCAM.' : 'Off: only loaded.'}</div></div><button class="ncc-toggle" type="button" role="switch" aria-checked="${!!S.saveToFm}" aria-label="Save to File Manager" data-toggle="savefm"></button></div>
         </div>
       </div>`;
   }
@@ -1002,6 +1017,7 @@ export function mountApp(root, host, engine) {
     if (d.scale === 'reset') return rescale({ scale: [1, 1, 1] });
     if (d.scale === 'inch') return rescale({ scale: [N.units.INCH, N.units.INCH, N.units.INCH] });
     if (d.toggle === 'tabs') { S.job.tabs.enabled = !S.job.tabs.enabled; return changed(); }
+    if (d.toggle === 'savefm') { S.saveToFm = !S.saveToFm; savePrefs({ saveToFileManager: S.saveToFm }); return render(); }
     if (d.toggle === 'chamfer') {
       const c = S.job.chamfer || {};
       S.job.chamfer = c.size > 0 ? { ...c, last: c.size, size: 0 } : { edges: 'all', ...c, size: c.last || CHAMFER.size };
@@ -1023,7 +1039,6 @@ export function mountApp(root, host, engine) {
     if (d.recentOpen) return openRecent(d.recentOpen);
     if (d.forget) return store.forget(d.forget, S.recent).then((l) => { S.recent = l; render(); });
     if (d.act === 'load') return loadProgram(t);
-    if (d.act === 'save') return saveProgram(t);
   });
 
   // Scrubbing the bar
@@ -1049,22 +1064,37 @@ export function mountApp(root, host, engine) {
 
   root.addEventListener('change', (e) => {
     const t = e.target;
+    // A unit field commits each value once: Enter commits it, then the
+    // browser's own change event can follow before the dialog redraws
+    if (t.matches('input[data-unit]')) {
+      if (t.dataset.done === t.value) return;
+      t.dataset.done = t.defaultValue = t.value;
+    }
     if (t.matches('[data-file]')) return openFile(t.files[0]);
     if (t.matches('[data-recent]')) return t.value && openRecent(t.value);
     if (t.dataset.tool) { S.job.toolOverride[t.dataset.tool] = +t.value || t.value; return changed(); }
     if (t.dataset.size) {
-      const k = +t.dataset.size, v = parseFloat(String(t.value).replace(',', '.'));
-      if (!(Number.isFinite(v) && v > 0 && S.analysis?.size[k] > 0)) return render();
-      const f = N.units.toMm(v, S.units) / S.analysis.size[k];
+      const k = +t.dataset.size, v = mmOf(t);
+      if (!(v && S.analysis?.size[k] > 0)) return render();
+      const f = v / S.analysis.size[k];
       if (Math.abs(f - 1) < 1e-9) return render();
       return rescale({ by: S.lock ? [f, f, f] : [0, 1, 2].map((i) => (i === k ? f : 1)) });
     }
     if (t.dataset.stock) {
-      const v = parseFloat(String(t.value).replace(',', '.'));
-      if (Number.isFinite(v) && v > 0) S.job.stock[t.dataset.stock] = N.units.toMm(v, S.units);
+      const v = mmOf(t);
+      if (v) S.job.stock[t.dataset.stock] = v;
       return changed();
     }
   });
+
+  // Unit fields: typed units become the machine's on leaving or Enter, and
+  // arrow keys step. A stepped value commits on leaving or Enter (the
+  // browser's change event only follows typing). A change that was already
+  // committed redrew the dialog, so its old field isn't here any more.
+  wireUnitFields(root, { imperial });
+  const commitUnit = (t) => { if (t?.isConnected && t.matches('input[data-unit]') && t.value !== t.defaultValue) t.dispatchEvent(new Event('change', { bubbles: true })); };
+  root.addEventListener('focusout', (e) => commitUnit(e.target));
+  root.addEventListener('keydown', (e) => { if (e.key === 'Enter') commitUnit(e.target); });
 
   root.addEventListener('dragover', (e) => { const z = e.target.closest('[data-drop]'); if (z) { e.preventDefault(); z.classList.add('over'); } });
   root.addEventListener('dragleave', (e) => { const z = e.target.closest('[data-drop]'); if (z) z.classList.remove('over'); });
@@ -1080,29 +1110,31 @@ export function mountApp(root, host, engine) {
     setTimeout(() => { if (S.toast === text) { S.toast = ''; render(); } }, 2600);
   }
 
+  // Loads the program; with Save to File Manager on, also saves it (as
+  // QuickCut: the free name is looked up while it loads, and the save is
+  // done before the dialog closes, or it would be abandoned)
   async function loadProgram(btn) {
     btn.disabled = true;
+    const saving = !!S.saveToFm;
+    const lookup = saving ? freePath(programName()).catch((e) => e) : null;
     try {
       const res = await api.post('/api/gcode-files/load-temp', { filename: programName(), content: S.result.gcode });
       if (!res.ok) throw new Error(`ncSender said ${res.status}`);
+      if (saving) {
+        try {
+          const path = await lookup;
+          if (path instanceof Error) throw path;
+          const saved = await api.post('/api/gcode-files/file/save', { path, content: S.result.gcode });
+          if (!saved.ok) throw new Error(`save failed (${saved.status})`);
+        } catch (e) {
+          alert(`The program was loaded, but saving it to File Manager failed: ${e.message}`);
+        }
+      }
       close();
     } catch (e) {
       btn.disabled = false;
       flash(`Couldn’t load the program: ${e.message}`);
     }
-  }
-
-  async function saveProgram(btn) {
-    btn.disabled = true;
-    try {
-      const path = await freePath(programName());
-      const res = await api.post('/api/gcode-files/file/save', { path, content: S.result.gcode });
-      if (!res.ok) throw new Error(`save failed (${res.status})`);
-      flash(`Saved to File Manager: ${path}`);
-    } catch (e) {
-      flash(`Couldn’t save: ${e.message}`);
-    }
-    btn.disabled = false;
   }
 
   // The first name not taken in File Manager's ncCAM folder, from one
