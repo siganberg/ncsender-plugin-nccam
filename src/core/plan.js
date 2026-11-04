@@ -524,7 +524,10 @@ export function plan(mesh, tools, job, limits = {}) {
     for (const [angle, bands] of byAngle) {
       const wide = Math.max(...bands.map((b) => b.w));
       const fit = vbits.filter((t) => Math.abs(t.angle / 2 - angle) <= 1.5);
-      const picked = tools.find((t) => t.id === job.toolOverride?.[`chamfers${angle}`] && fit.includes(t));
+      // A bit picked by hand has to be wide enough: past its cone, its body would cut a step
+      const asked = tools.find((t) => t.id === job.toolOverride?.[`chamfers${angle}`] && fit.includes(t));
+      const picked = asked && vFits(asked, wide) ? asked : null;
+      if (asked && !picked) warnings.push({ kind: 'chamfer', text: `${asked.name} is too small for the ${L(wide)} chamfer${bands.length > 1 ? 's' : ''}, so another V-bit is used.` });
       const tool = picked || fit.filter((t) => vFits(t, wide)).sort((a, b) => a.diameter - b.diameter)[0];
       const what = `${deg(angle)} chamfer${bands.length > 1 ? 's' : ''}`;
       if (!tool) {
@@ -572,7 +575,10 @@ export function plan(mesh, tools, job, limits = {}) {
   // The option: every top edge of a flat face, chamfered `size` wide
   if (job.chamfer?.size > 0) {
     const w = job.chamfer.size, which = job.chamfer.edges || 'all';
-    const picked = tools.find((t) => t.id === job.toolOverride?.chamfer && vbits.includes(t));
+    // A bit picked by hand has to be wide enough: past its cone, its body would cut a step
+    const asked = tools.find((t) => t.id === job.toolOverride?.chamfer && vbits.includes(t));
+    const picked = asked && vFits(asked, w) ? asked : null;
+    if (asked && !picked) warnings.push({ kind: 'chamfer', text: `${asked.name} is too small for a ${L(w)} chamfer, so another V-bit is used.` });
     // A 90° bit makes the usual 45° chamfer; else the angle nearest to it
     const tool = picked || vbits.filter((t) => vFits(t, w)).sort((a, b) => Math.abs(a.angle - 90) - Math.abs(b.angle - 90) || a.diameter - b.diameter)[0];
     if (!tool) warnings.push({ kind: 'chamfer', text: vbits.length ? `No V-bit in your Tool Library is wide enough for a ${L(w)} chamfer.` : 'Adding a chamfer to top surfaces needs a V-bit in your Tool Library.' });
@@ -621,7 +627,8 @@ export function plan(mesh, tools, job, limits = {}) {
   for (const op of ops) {
     // Threads and chamfers took the user's pick already, if it fits
     const over = op.kind === 'thread' || op.kind === 'chamfer' ? null : job.toolOverride?.[op.id];
-    if (over) { const t = tools.find((x) => x.id === over); if (t) op.tool = t; }
+    // A shaped bit picked before ncCAM knew it (saved with a recent part): not used
+    if (over) { const t = tools.find((x) => x.id === over); if (t && t.kind !== 'profile') op.tool = t; }
     op.enabled = !job.disabled?.[op.id];
     // A bore needs its pilot, a thread its hole: off with them
     const parent = (op.bore || op.kind === 'thread') && ops.find((o) => o.id === op.after);

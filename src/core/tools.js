@@ -20,10 +20,13 @@ const ENDMILL_TYPES = new Set(['flat', 'flat end mill', 'endmill', 'end mill', '
 
 export function toolKind(tool) {
   const t = String(tool.type || '').toLowerCase().replace(/[-_]/g, ' ');
-  // Shaped router bits a library often files as flat or ball (keyhole,
-  // roundover, cove, bowl): they cut a profile, not a wall or a floor
-  if (/keyhole|round ?over|\bcove\b|bowl|ogee|dovetail/i.test(tool.name || '')) return 'profile';
-  if (ENDMILL_TYPES.has(t) || t.startsWith('flat')) return 'flat';
+  // Shaped router bits a library often files as flat (keyhole, roundover,
+  // cove, bowl): they cut a profile, not a wall or a floor. Only for flat:
+  // a cove or core-box bit filed as ball is a round-nose bit, a bowl bit
+  // filed as surfacing flattens slabs
+  const shaped = /keyhole|round ?over|\bcove\b|bowl|ogee|dovetail/i.test(tool.name || '');
+  if (ENDMILL_TYPES.has(t) || t.startsWith('flat')) return shaped ? 'profile' : 'flat';
+  if (!t && shaped) return 'profile';
   if (t.startsWith('surfac')) return 'surfacing';
   if (t.startsWith('drill')) return 'drill';
   if (t.startsWith('ball')) return 'ball';

@@ -44,9 +44,14 @@ test('keyhole and roundover bits filed as flat are never picked as end mills', a
     { id: 20, toolId: 20, name: '3/8in keyhole .25 shank', type: 'flat', diameter: 9.525 },
     { id: 21, toolId: 21, name: 'Radius 6.35mm Roundover Bit', type: 'flat', diameter: 12.7 },
     { id: 22, toolId: 22, name: 'Cove Box Router Bit', type: 'ball', diameter: 19.05 }]);
-  assert.deepEqual(lib.filter((t) => t.id >= 20).map((t) => t.kind), ['profile', 'profile', 'profile']);
+  // Filed as ball, a cove bit is a round-nose bit: its type stands
+  assert.deepEqual(lib.filter((t) => t.id >= 20).map((t) => t.kind), ['profile', 'profile', 'ball']);
   const { p } = await make('bracket.step', undefined, lib);
   assert.ok(p.ops.every((o) => o.tool.id < 20), p.ops.map((o) => o.tool.name).join(', '));
+  // Picked by hand before this (saved with a recent part): not used
+  const pocket = p.ops.find((o) => o.kind === 'pocket');
+  const { p: q } = await make('bracket.step', (j) => ({ ...j, toolOverride: { [pocket.id]: 21 } }), lib);
+  assert.notEqual(q.ops.find((o) => o.kind === 'pocket').tool.id, 21);
 });
 
 test('bracket: the pocket and holes are cut to size', async () => {
@@ -1126,4 +1131,12 @@ test('the dialog page is whole: no merge leftovers, one build stamp', async () =
   assert.equal((html.match(/var BUILD = '/g) || []).length, 1);
   const lib = readFileSync(new URL('../lib/nccam.js', import.meta.url), 'utf8');
   assert.ok(!/^(<<<<<<<|>>>>>>>)/m.test(lib), 'conflict markers in lib/nccam.js');
+});
+
+test('a V-bit picked by hand too small for the chamfer is not used, and said so', async () => {
+  const lib = N.normalizeTools([...LIBRARY, { id: 30, toolId: 30, name: 'Tiny 60° V-bit', type: 'v-bit', diameter: 3.175 }]);
+  const { p } = await make('bracket.step', (j) => ({ ...j, chamfer: { size: 3, edges: 'all' }, toolOverride: { chamfer: 30 } }), lib);
+  const c = p.ops.find((o) => o.id === 'chamfer');
+  assert.ok(c && c.tool.id !== 30, c?.tool.name);
+  assert.ok(p.warnings.some((w) => /Tiny 60° V-bit is too small/.test(w.text)));
 });
