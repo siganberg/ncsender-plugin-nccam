@@ -5,7 +5,7 @@
   "minAppVersion": "2.0.88",
   "configUi": "config.html",
   "author": "ncSender",
-  "description": "Turns a STEP part into G-code: finds the pockets, holes, steps and outline, picks end mills and drills from your Tool Library, sets speeds and feeds for the material, and previews the cut as material is removed. 2.5D parts cut from the top.",
+  "description": "Turns a 3D part (STEP, STL or 3MF) into G-code: finds the pockets, holes, steps, threads, chamfers and outline, picks end mills, drills, thread mills and V-bits from your Tool Library, and sets speeds and feeds for the material. 2.5D parts cut from the top; curved 3D parts get roughing and ball-end finishing. Resize the part, preview the cut as material is removed, then load it into ncSender or save it to File Manager.",
   "category": "gcode-generator",
   "repository": "https://github.com/siganberg/ncsender-plugin-nccam",
   "icon": "logo.png",
