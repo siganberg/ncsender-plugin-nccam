@@ -29,7 +29,9 @@ export function toolKind(tool) {
   if (!t && shaped) return 'profile';
   if (t.startsWith('surfac')) return 'surfacing';
   if (t.startsWith('drill')) return 'drill';
-  if (t.startsWith('ball')) return 'ball';
+  // A Tapered Ball Nose is a ball at the tip (its diameter); `taper` and
+  // toolProfile add the cone above it
+  if (t.startsWith('ball') || t.startsWith('tapered ball')) return 'ball';
   if (t.startsWith('v')) return 'vbit';
   if (t.startsWith('chamfer')) return 'chamfer';
   if (t.startsWith('thread')) return 'threadmill';
@@ -80,6 +82,7 @@ export function normalizeTools(list) {
       fluteLength: Number(t.dimensions?.flute_length) || null,
       flutes: Number(t.metadata?.flutes) || 2,
       ...(/^(vbit|chamfer)$/.test(toolKind(t)) ? { angle: vAngle(t) } : {}),
+      ...(taperOf(t) ? { taper: taperOf(t), shank: Number(t.dimensions?.shank_diameter) || null } : {}),
       ...(toolKind(t) === 'threadmill' ? threadMill(t) : {}),
     }));
 }
@@ -98,6 +101,38 @@ export function threadMill(t) {
     cut, pitchMin: Number(md.pitch_min) || (m ? Number(m[2]) : 0), pitchMax: Number(md.pitch_max) || (m ? Number(m[3]) : Infinity),
     reach: reach || 3 * cut, reachAssumed: !reach, neck: Number(md.neck_diameter) || 0.7 * cut,
   };
+}
+
+// A Tapered Ball Nose's taper, degrees per side (dimensions.taper_angle), or 0.
+export function taperOf(t) {
+  if (!/^tapered[-_ ]?ball/i.test(String(t.type || ''))) return 0;
+  const a = Number(t.dimensions?.taper_angle);
+  return a > 0 && a < 45 ? a : 0;
+}
+
+// The tool's cutting end seen from the side: tip(d) is how far above the tip
+// its edge is at d out from the axis, out to R. A Tapered Ball Nose is its
+// ball up to where the cone meets it, then the cone, up to its flute length
+// (25 mm unless the library says) and no wider than its shank; and no higher
+// than `height`, past which nothing can touch it. r is the tip's radius.
+const DEFAULT_TAPER_REACH = 25;
+export function toolProfile(tool, height = Infinity) {
+  const r = (tool.kind === 'threadmill' ? tool.neck : tool.diameter) / 2;
+  if (tool.kind === 'ball') {
+    const ball = (d) => r - Math.sqrt(Math.max(0, r * r - d * d));
+    const th = ((tool.taper || 0) * Math.PI) / 180;
+    if (!(th > 0)) return { r, R: r, tip: ball };
+    const d0 = r * Math.cos(th), z0 = r * (1 - Math.sin(th)), k = Math.tan(th);
+    let R = d0 + (Math.max(z0, Math.min(tool.fluteLength || DEFAULT_TAPER_REACH, height)) - z0) * k;
+    if (tool.shank > 0) R = Math.min(R, tool.shank / 2);
+    R = Math.max(R, d0);
+    return { r, R, taper: tool.taper, tip: (d) => (d <= d0 ? ball(d) : z0 + (d - d0) / k) };
+  }
+  if (tool.kind === 'vbit' || tool.kind === 'chamfer' || tool.kind === 'drill') {
+    const t = Math.tan(((tool.angle || (tool.kind === 'drill' ? 118 : 90)) * Math.PI) / 360);
+    return { r, R: r, tip: (d) => d / t };
+  }
+  return { r, R: r, tip: () => 0 };
 }
 
 // A V-bit's included angle. The Tool Library keeps half of it in
