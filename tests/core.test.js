@@ -585,6 +585,21 @@ test('3D roughing, its wall laps and rest roughing never cut into the part', asy
   }
 });
 
+test('planning the same part again reuses its 3D work and gives the same plan', () => {
+  const lib = N.normalizeTools([...LIBRARY.map((t) => ({ ...t, dimensions: undefined })), { id: 9, toolId: 9, name: 'ball', type: 'ball', diameter: 6.35 }, { id: 10, toolId: 10, name: 'big ball', type: 'ball', diameter: 12 }]);
+  const mesh = N.orient(slotPart(), 'top');
+  const job = { ...N.defaultJob(N.analyze(mesh)), surface3d: true };
+  const shape = (p) => p.ops.map((o) => `${o.kind}:${o.tool.id}:${o.region ? N.clip.area(o.region).toFixed(3) : ''}:${o.layers?.length ?? ''}`).join(' ');
+  const first = shape(N.plan(mesh, lib, job));
+  assert.ok(/rest3d/.test(first));
+  // The same mesh again, a new finishing ball, then a fresh copy of the mesh
+  // (nothing kept): what was kept matches working it out again
+  const again = N.plan(mesh, lib, { ...job, toolOverride: { finish3d: 10 } });
+  const fresh = N.plan({ ...mesh }, lib, { ...job, toolOverride: { finish3d: 10 } });
+  assert.equal(shape(again), shape(fresh));
+  assert.equal(shape(again).replace(/finish3d:10/, 'finish3d:9'), first);
+});
+
 test('with the 3D roughing switched off, rest roughing never rapids into stock', () => {
   const lib = N.normalizeTools([...LIBRARY.map((t) => ({ ...t, dimensions: undefined })), { id: 9, toolId: 9, name: 'ball', type: 'ball', diameter: 6.35 }]);
   const mesh = N.orient(slotPart(), 'top');

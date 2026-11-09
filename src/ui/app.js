@@ -275,7 +275,7 @@ export function mountApp(root, host, engine) {
   // ncCAM works in the browser that shows it. On a small computer (a
   // Raspberry Pi running ncSender) planning can take a while; ncSender's
   // own page opened from a laptop's browser plans there instead.
-  const SLOW = { plan: 6000, paths: 15000, tip: 5000 };
+  const SLOW = { plan: 6000, paths: 15000, tip: 5000, long: 10000 };
   const smallHere = () => {
     const small = /aarch64|arm64|armv\d|raspberry/i.test(navigator.userAgent || '') || (navigator.hardwareConcurrency || 8) <= 4;
     const here = /^(localhost|127\.|\[?::1)/.test(location.hostname || 'localhost') || !/^https?:$/.test(location.protocol);
@@ -290,6 +290,7 @@ export function mountApp(root, host, engine) {
   // after a few seconds, where it would be faster
   function busyBox(label, style = '') {
     return `<div class="ncc-busy" ${style ? `style="${style}"` : ''}><div class="ncc-busy-in"><div class="ncc-busy-row"><span class="ncc-spin"></span>${esc(label)}<span class="ncc-elapsed" data-elapsed></span></div>
+      <div class="ncc-busy-tip" data-longtip hidden>A detailed part takes a while the first time (a minute or more for a large STL). ncCAM keeps what it works out, so most changes afterwards are quick.</div>
       <div class="ncc-busy-tip" data-slowtip hidden>Slow for your parts? Open ncSender in a browser on a laptop or desktop (this machine's address, port 8090): ncCAM works there, usually several times faster.</div></div></div>`;
   }
   let busyStart = null;
@@ -302,6 +303,7 @@ export function mountApp(root, host, engine) {
     const ms = performance.now() - busyStart, sec = Math.floor(ms / 1000);
     root.querySelectorAll('[data-elapsed]').forEach((e) => { e.textContent = sec >= 2 ? ` ${sec} s` : ''; });
     if (ms >= SLOW.tip && smallHere()) root.querySelectorAll('[data-slowtip]').forEach((e) => { e.hidden = false; });
+    if (ms >= SLOW.long) root.querySelectorAll('[data-longtip]').forEach((e) => { e.hidden = false; });
   }, 500);
 
   // The part and its settings for next time, first in the recent parts

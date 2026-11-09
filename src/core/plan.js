@@ -97,6 +97,8 @@ const coverage = (region, r) => {
   const a = C.area(region);
   return a > 0 ? C.area(opened(region, r)) / a : 0;
 };
+// What a plan works out from the part alone, kept per mesh (see plan)
+const KEPT = new WeakMap();
 const fluteOk = (tool, depth) => !tool.fluteLength || tool.fluteLength + 1e-6 >= depth;
 const fmt = (v) => (Math.round(v * 10) / 10).toString();
 
@@ -142,7 +144,12 @@ export function plan(mesh, tools, job, limits = {}) {
   // The triangles' shadows meet edge to edge with rounding cracks between
   // them (a filleted edge has thousands): grow and shrink by 2 µm to close
   // them, or every crack becomes a pocket.
-  const sections = new Map();
+  // Kept with the part between plans (a new tool, option or stock size
+  // plans again from the same mesh): sections and the 3D narrow places
+  const kept = KEPT.get(mesh) || new Map();
+  KEPT.set(mesh, kept);
+  const keep = (key, make) => { if (!kept.has(key)) kept.set(key, make()); return kept.get(key); };
+  const sections = keep('sections', () => new Map());
   const section = (z) => {
     if (sections.has(z)) return sections.get(z);
     const s = C.unionEvenOdd(slice(mesh, z + EPS));
@@ -214,7 +221,8 @@ export function plan(mesh, tools, job, limits = {}) {
     }
     // Around the part, wide enough for both tools; it may run past the
     // stock's edge (air), or a narrow margin would leave the edge uncut
-    const ring = C.offset(footprint, Math.max(rough.diameter, finisher.diameter) + 1);
+    const ringW = Math.max(rough.diameter, finisher.diameter) + 1;
+    const ring = C.offset(footprint, ringW);
     // Each layer clears what the one above cleared, a little lower. A spot
     // first open at this height (a mesh that isn't closed, or rounding) had
     // nothing above it cut: it is `fresh`, cut from the top.
@@ -231,7 +239,7 @@ export function plan(mesh, tools, job, limits = {}) {
       // clearing rings (each one an offset of the whole outline)
       // exact: the outline itself, for what cuts right to it (wall laps, rest
       // roughing); region, simplified, for the clearing that leaves ALLOW_3D
-      const layer = { zFrom, z: bottom ? -job.throughDepth : z, exact: region, region: C.simplify(region, SIMPLIFY_3D), fresh: C.area(fresh) >= TINY && C.offset(fresh, -0.5).length ? C.simplify(fresh, SIMPLIFY_3D) : [] };
+      const layer = { zFrom, z: bottom ? -job.throughDepth : z, at: { z, prevZ: prev ? zFrom : null, bottom }, exact: region, region: C.simplify(region, SIMPLIFY_3D), fresh: C.area(fresh) >= TINY && C.offset(fresh, -0.5).length ? C.simplify(fresh, SIMPLIFY_3D) : [] };
       if (C.area(region) >= TINY || layer.fresh.length) layers.push(layer);
       prev = open;
       zFrom = z;
@@ -245,29 +253,33 @@ export function plan(mesh, tools, job, limits = {}) {
     const rr = (tools.find((t) => t.id === job.toolOverride?.[r3.id]) || rough).diameter / 2;
     // Only pieces at least NARROW_3D across: a curved outline has slivers in
     // every hollow, too thin to matter and too many to chase with a tool
-    const narrow = layers.map((l) => {
+    // Kept with the part: the same layers (heights and ring) and tool give
+    // the same narrow places, so a new finishing tool, option or stock plans
+    // again in moments
+    const at = (l) => `${l.at.prevZ}|${l.at.z}|${l.at.bottom}|${ringW}`;
+    const narrow = layers.map((l) => keep(`narrow|${at(l)}|${rr}`, () => {
       const inner = C.offset(l.exact, -ALLOW_3D);
       const bits = C.cleanLoops(C.difference(inner, opened(inner, rr)), TINY);
       return C.regions(bits).filter((g) => C.offset(g, -NARROW_3D / 2).length).flat();
-    });
+    }));
     let after = r3.id;
     if (narrow.some((x) => C.area(x) >= TINY)) {
       const smaller = flats.filter((t) => t.diameter < rough.diameter - 1e-6 && fits(t));
       // What a tool leaves of the narrow places, clearing each layer to the wall
-      // Kept per tool: the pick and the warning below ask for the same one,
-      // and on a detailed part (a 600 000-triangle STL) each ask opens every
-      // layer's outline, tens of seconds
-      const leftKept = new Map();
-      const leftBy = (t) => {
-        if (!leftKept.has(t.id)) leftKept.set(t.id, layers.map((l, k) => (C.area(narrow[k]) >= TINY ? C.cleanLoops(C.difference(narrow[k], opened(l.region, t.diameter / 2)), TINY) : [])).flat());
-        return leftKept.get(t.id);
-      };
+      // Kept with the part per tool (the pick and the warning below ask for
+      // the same one): on a detailed part each opens every layer's outline
+      const leftBy = (t) => layers.map((l, k) => (C.area(narrow[k]) >= TINY ? keep(`left|${at(l)}|${rr}|${t.diameter}`, () => C.cleanLoops(C.difference(narrow[k], opened(l.region, t.diameter / 2)), TINY)) : [])).flat();
       // The largest that leaves a quarter or less, else the smallest
       const base = C.area(narrow.flat());
       const small = smaller.find((t) => C.area(leftBy(t)) <= base * 0.25) || smaller[smaller.length - 1];
       if (small) {
         const sr = small.diameter / 2;
-        const rest = layers.map((l, k) => ({ zFrom: l.zFrom, z: l.z, region: C.area(narrow[k]) >= TINY ? C.intersection(l.exact, C.offset(narrow[k], 2 * sr + 0.5)) : [] })).filter((l) => l.region.length);
+        // Round the narrow places, grown past the tool. Their outlines carry
+        // every bump of the mesh, and growing that by millimetres at once is
+        // slow (a detailed STL: 38 s); growing a little first smooths the
+        // bumps, and two steps make the same shape. Kept with the part.
+        const around = (l, k) => keep(`around|${at(l)}|${rr}|${sr}`, () => C.offset(C.offset(narrow[k], 0.2), 2 * sr + 0.3));
+        const rest = layers.map((l, k) => ({ zFrom: l.zFrom, z: l.z, region: C.area(narrow[k]) >= TINY ? C.intersection(l.exact, around(l, k)) : [] })).filter((l) => l.region.length);
         after = add({ kind: 'rest3d', label: 'Clear where the big end mill can\u2019t reach', tool: take(small), zTop: analysis.top, zBottom: rest[rest.length - 1].z, region: C.union(rest.flatMap((l) => l.region)), layers: rest, after: r3.id, detail: `${rest.length} layers · holes, slots, corners` }).id;
       }
       const tool = small || rough;
