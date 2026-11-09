@@ -1,9 +1,8 @@
 ## What's Changed
 
-### ✨ New Features
-- **Size fields take any unit.** Type a size in mm or inches, whatever your machine uses: `1/4"`, `6mm`, `1-1/2 in`, `1,5mm`, or a sum like `12mm+1/4"`. It becomes your machine's units when you leave the field or press Enter. Up and Down step the value (Shift 10, Alt 0.1). The same as QuickCut's fields, from the shared [ncsender-unit-input](https://github.com/tmuka/ncsender-unit-input) library.
-- **Save to File Manager is a switch**, as in QuickCut, and is remembered. While it's on, Load into ncSender also saves the program to File Manager › ncCAM.
+### ⚡ Faster
+- **Detailed 3D parts plan again in seconds.** After the first plan, ncCAM keeps the slow 3D work with the part, so picking another finishing tool, moving zero, or changing the stock or an option replans in a few seconds instead of over a minute. A 620,000-triangle STL: the first plan goes from 76 s to 48 s on a MacBook Air, then about 3 s per change. The toolpaths are the same as before.
+- While a long first plan runs, a note says a detailed part takes a while the first time.
 
 ### 🐛 Bug Fixes
-- Keyhole, roundover, cove and other shaped router bits filed as flat end mills in the Tool Library are no longer picked for pockets and cut-outs.
-- A V-bit picked by hand that is too small for the chamfer width is no longer used (its body would cut a step past the cone); another is used, with a note.
+- A tool picked in Operations stays shown while the new plan runs. Before, the dropdown snapped back to the old tool until the plan finished, so on a big part it looked like it ignored the pick.
