@@ -5,7 +5,7 @@
 // outside edges clockwise, which is the direction Clipper already gives
 // outer loops and holes.
 import * as C from './clip.js';
-import { FINISHES, tabDefaults } from './tools.js';
+import { FINISHES, tabDefaults, toolProfile } from './tools.js';
 
 const CLEAR = 3; // mm above the stock for moves between cuts
 // Material 3D roughing can leave over the surface: a layer's stair plus the
@@ -517,17 +517,26 @@ function cutout(path, footprint, r, fd, zTop, zBottom, job, allowance) {
 // half a cell's diagonal nearer than it is: any point of the surface is that
 // close to some node, and on a steep wall the surface between two nodes can
 // stand far above both; the tool's edge must still see it.
+//
+// A tapered ball nose's cone touches a steep wall before its tip reaches the
+// foot of it, so the tool is its whole profile out to where the cone stands
+// higher than any of the part (R); r stays the tip's radius, for the passes'
+// spacing.
 function toolOnSurface(g, tool, zFloor) {
-  const r = tool.diameter / 2, c = g.cell, ball = tool.kind === 'ball';
-  const near = c * Math.SQRT1_2, n = Math.ceil((r + near) / c);
-  const tip = (d) => (ball ? r - Math.sqrt(Math.max(0, r * r - d * d)) : 0); // tip to tool end at d out
+  const c = g.cell, r = tool.diameter / 2;
+  const flat = tool.kind !== 'ball' && tool.kind !== 'bullnose'; // an end mill finishing 3D is taken as flat
+  let top = zFloor;
+  for (const v of g.h) if (v > top) top = v;
+  const prof = toolProfile(flat ? { kind: 'flat', diameter: tool.diameter } : tool, top - zFloor + 1);
+  const R = prof.R, tip = prof.tip; // tip to tool end at d out
+  const near = c * Math.SQRT1_2, n = Math.ceil((R + near) / c);
   const st = [];
   for (let j = -n; j <= n; j++) for (let i = -n; i <= n; i++) {
     const d = Math.max(0, Math.hypot(i, j) * c - near);
-    if (d <= r + 1e-9) st.push(i, j, tip(d));
+    if (d <= R + 1e-9) st.push(i, j, tip(d));
   }
   const { nx, ny, h, x0, y0 } = g;
-  const S = { r, c, n, zFloor, x: (i) => x0 + i * c, y: (j) => y0 + j * c };
+  const S = { r, R, rc: prof.rc || 0, c, n, zFloor, x: (i) => x0 + i * c, y: (j) => y0 + j * c };
   // Lowest the tip can go with the tool's axis on node i, j (null: no part
   // within reach), never below zFloor
   S.drop = (i, j) => {
@@ -542,12 +551,12 @@ function toolOnSurface(g, tool, zFloor) {
   };
   // The same anywhere, not only on a node
   S.dropAt = (x, y) => {
-    const fi = (x - x0) / c, fj = (y - y0) / c, m = (r + near) / c;
+    const fi = (x - x0) / c, fj = (y - y0) / c, m = (R + near) / c;
     let z = -Infinity;
     for (let jj = Math.max(0, Math.ceil(fj - m)); jj <= Math.min(ny - 1, Math.floor(fj + m)); jj++) {
       for (let ii = Math.max(0, Math.ceil(fi - m)); ii <= Math.min(nx - 1, Math.floor(fi + m)); ii++) {
         const d = Math.max(0, Math.hypot(ii - fi, jj - fj) * c - near);
-        if (d > r) continue;
+        if (d > R) continue;
         const v = h[jj * nx + ii] - tip(d);
         if (v > z) z = v;
       }
@@ -556,7 +565,7 @@ function toolOnSurface(g, tool, zFloor) {
   };
   // The highest surface anywhere under the tool: rapids stop above it
   S.underAt = (x, y) => {
-    const fi = (x - x0) / c, fj = (y - y0) / c, m = (r + near) / c;
+    const fi = (x - x0) / c, fj = (y - y0) / c, m = (R + near) / c;
     let z = zFloor;
     for (let jj = Math.max(0, Math.ceil(fj - m)); jj <= Math.min(ny - 1, Math.floor(fj + m)); jj++) {
       for (let ii = Math.max(0, Math.ceil(fi - m)); ii <= Math.min(nx - 1, Math.floor(fi + m)); ii++) if (h[jj * nx + ii] > z) z = h[jj * nx + ii];
@@ -614,7 +623,10 @@ function surface3d(path, g, tool, fd, ridge, zFloor, above, steep = true) {
   const S = toolOnSurface(g, tool, zFloor);
   if (!S.box) return;
   const { r, c } = S, { i0, i1, j0, j1 } = S.box;
-  const over = tool.kind === 'ball' ? 2 * Math.sqrt(Math.max(0, 2 * r * ridge - ridge * ridge)) : fd.stepover * 0.5;
+  // Spaced for the ridge the round part leaves (a bull nose's corners on a
+  // slope; its flat leaves none on a floor)
+  const rc = S.rc;
+  const over = rc > 0 ? 2 * Math.sqrt(Math.max(0, 2 * rc * ridge - ridge * ridge)) : fd.stepover * 0.5;
   const every = Math.max(1, Math.floor(Math.min(over, r) / c + 1e-9));
   const reach = 3 * every * c + 1e-6;
   const rows = [];

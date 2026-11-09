@@ -291,6 +291,9 @@ export function plan(mesh, tools, job, limits = {}) {
     }
     add({ id: 'finish3d', kind: 'finish3d', label: 'Finish the 3D surface', tool: take(finisher), zTop: analysis.top, zBottom: 0, region: footprint, after, ridge, detail: `Parallel passes${job.finish === 'fast' ? '' : ' and waterlines on steep walls'} · ${len(ridge, job.units, job.units === 'in' ? 4 : 2)} ridges`, steep: job.finish !== 'fast', left: step + ALLOW_3D + 1.2 });
     warnings.push({ kind: 'surface3d', text: `Curved faces are cut in 3D: roughed in ${layers.length} layers, then ${finisher.name} follows the surface.` });
+    // A tapered ball's cone rides on a wall steeper than its taper before
+    // the tip gets to the foot: the paths keep the cone off the part
+    if (finisher.taper > 0) warnings.push({ kind: 'surface3d', text: `${finisher.name} tapers ${Math.round(finisher.taper * 100) / 100}° a side, so on walls steeper than ${Math.round((90 - finisher.taper) * 100) / 100}° its cone keeps it off the foot of the wall, leaving a sliver there.` });
     return true;
   }
 

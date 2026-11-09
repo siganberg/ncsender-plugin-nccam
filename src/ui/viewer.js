@@ -2,6 +2,7 @@
 // Z is up, like the machine.
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
+import { toolProfile } from '../core/tools.js';
 
 export const OP_COLORS = { face: '#93a2b4', pocket: '#1abc9c', hole: '#4ea1ff', drill: '#4ea1ff', step: '#2ecc71', corners: '#48d1b4', cutout: '#a78bfa', rough3d: '#f5a524', rest3d: '#e3c341', finish3d: '#ff7a59', chamfer: '#f472b6', thread: '#c084fc' };
 
@@ -509,6 +510,31 @@ export class Viewer {
       const h = r / Math.tan(((tool.angle || (tool.kind === 'drill' ? 118 : 90)) * Math.PI) / 360);
       tip = new THREE.Mesh(new THREE.ConeGeometry(r, h, 48), metal);
       tip.rotation.x = -Math.PI / 2; tip.position.z = h / 2;
+    } else if (tool.kind === 'bullnose') {
+      // Bull nose / bowl: its side profile turned around the axis, flat
+      // bottom, rounded corners (and any taper) up to the flutes' top
+      const p = toolProfile(tool, flute), pts = [];
+      for (let k = 0; k <= 32; k++) { const d = (p.R * k) / 32; pts.push(new THREE.Vector2(d, Math.min(flute, p.tip(d)))); }
+      pts.push(new THREE.Vector2(p.R, flute), new THREE.Vector2(0, flute));
+      const both = metal.clone(); both.side = THREE.DoubleSide; // the lathe's faces point either way
+      tip = new THREE.Mesh(new THREE.LatheGeometry(pts, 64), both);
+      tip.rotation.x = Math.PI / 2;
+    } else if (tool.kind === 'ball' && tool.taper > 0) {
+      // Tapered ball nose: the round tip up to where the cone meets it, the
+      // cone up the flutes (no wider than the shank), then straight
+      const th = (tool.taper * Math.PI) / 180, d0 = r * Math.cos(th), z0 = r * (1 - Math.sin(th));
+      const R = toolProfile(tool, flute).R, hc = Math.min(flute, z0 + (R - d0) / Math.tan(th));
+      tip = new THREE.Group();
+      const cone = new THREE.Mesh(new THREE.CylinderGeometry(R, d0, Math.max(0.01, hc - z0), 64), metal);
+      cone.rotation.x = Math.PI / 2; cone.position.z = (z0 + hc) / 2;
+      const end = new THREE.Mesh(new THREE.SphereGeometry(r, 48, 24, 0, Math.PI * 2, Math.PI / 2 + th, Math.PI / 2 - th), metal);
+      end.rotation.x = Math.PI / 2; end.position.z = r;
+      tip.add(cone, end);
+      if (flute > hc + 0.01) {
+        const body = new THREE.Mesh(new THREE.CylinderGeometry(R, R, flute - hc, 64), metal);
+        body.rotation.x = Math.PI / 2; body.position.z = (hc + flute) / 2;
+        tip.add(body);
+      }
     } else if (tool.kind === 'ball') {
       // Flutes down to a round end, its lowest point at the tip
       tip = new THREE.Group();
@@ -521,7 +547,7 @@ export class Viewer {
       tip = new THREE.Mesh(new THREE.CylinderGeometry(r, r, flute, 64), metal);
       tip.rotation.x = Math.PI / 2; tip.position.z = flute / 2;
     }
-    const sr = wide ? 3.175 : Math.max(r, Math.min(3.175, r * 1.5));
+    const sr = tool.shank > 0 ? tool.shank / 2 : wide ? 3.175 : Math.max(r, Math.min(3.175, r * 1.5));
     const shankLen = 20;
     const shank = new THREE.Mesh(new THREE.CylinderGeometry(sr, sr, shankLen, 32), new THREE.MeshStandardMaterial({ color: 0xaab3bc, metalness: 0.8, roughness: 0.35 }));
     shank.rotation.x = Math.PI / 2; shank.position.z = flute + shankLen / 2;
