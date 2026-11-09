@@ -613,10 +613,14 @@ export function mountApp(root, host, engine) {
     if (!p) return busyBox('Planning\u2026', 'position: static; flex: 1');
     const rows = p.ops.map((o) => {
       const choices = toolChoices(o);
+      // While a new plan runs (a minute or more on a big 3D part) the rows
+      // are the old plan's: show the tool just picked, not the one before
+      const asked = S.planning ? S.job.toolOverride?.[o.id] : null;
+      const pick = asked != null && choices.some((t) => t.id === asked) ? asked : o.tool.id;
       return `<div class="ncc-op ${o.enabled ? '' : 'off'} ${S.focusOp === o.id ? 'focus' : ''}" data-focus="${o.id}">
         <div class="ncc-op-icon" style="background: color-mix(in srgb, ${OP_COLORS[o.kind]} 16%, transparent); color: ${OP_COLORS[o.kind]}">${ICONS[o.kind] || ICONS.pocket}</div>
         <div class="ncc-op-text"><div class="ncc-op-title">${esc(o.label)}</div><div class="ncc-op-sub ncc-mono">${esc(o.detail)}</div></div>
-        <select class="ncc-select" data-tool="${o.id}" aria-label="Tool for ${esc(o.label)}">${choices.map((t) => `<option value="${t.id}" ${t.id === o.tool.id ? 'selected' : ''}>T${N.toolNumber(t, S.numbering)} \u00b7 ${esc(t.name)}</option>`).join('')}</select>
+        <select class="ncc-select" data-tool="${o.id}" aria-label="Tool for ${esc(o.label)}">${choices.map((t) => `<option value="${t.id}" ${t.id === pick ? 'selected' : ''}>T${N.toolNumber(t, S.numbering)} \u00b7 ${esc(t.name)}</option>`).join('')}</select>
         <button class="ncc-toggle" type="button" role="switch" aria-checked="${o.enabled}" aria-label="${esc(o.label)}" data-op="${o.id}"></button>
       </div>`;
     }).join('');
