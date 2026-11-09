@@ -254,7 +254,14 @@ export function plan(mesh, tools, job, limits = {}) {
     if (narrow.some((x) => C.area(x) >= TINY)) {
       const smaller = flats.filter((t) => t.diameter < rough.diameter - 1e-6 && fits(t));
       // What a tool leaves of the narrow places, clearing each layer to the wall
-      const leftBy = (t) => layers.map((l, k) => (C.area(narrow[k]) >= TINY ? C.cleanLoops(C.difference(narrow[k], opened(l.region, t.diameter / 2)), TINY) : [])).flat();
+      // Kept per tool: the pick and the warning below ask for the same one,
+      // and on a detailed part (a 600 000-triangle STL) each ask opens every
+      // layer's outline, tens of seconds
+      const leftKept = new Map();
+      const leftBy = (t) => {
+        if (!leftKept.has(t.id)) leftKept.set(t.id, layers.map((l, k) => (C.area(narrow[k]) >= TINY ? C.cleanLoops(C.difference(narrow[k], opened(l.region, t.diameter / 2)), TINY) : [])).flat());
+        return leftKept.get(t.id);
+      };
       // The largest that leaves a quarter or less, else the smallest
       const base = C.area(narrow.flat());
       const small = smaller.find((t) => C.area(leftBy(t)) <= base * 0.25) || smaller[smaller.length - 1];
