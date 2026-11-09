@@ -524,7 +524,7 @@ function cutout(path, footprint, r, fd, zTop, zBottom, job, allowance) {
 // spacing.
 function toolOnSurface(g, tool, zFloor) {
   const c = g.cell, r = tool.diameter / 2;
-  const flat = tool.kind !== 'ball'; // an end mill finishing 3D is taken as flat
+  const flat = tool.kind !== 'ball' && tool.kind !== 'bullnose'; // an end mill finishing 3D is taken as flat
   let top = zFloor;
   for (const v of g.h) if (v > top) top = v;
   const prof = toolProfile(flat ? { kind: 'flat', diameter: tool.diameter } : tool, top - zFloor + 1);
@@ -536,7 +536,7 @@ function toolOnSurface(g, tool, zFloor) {
     if (d <= R + 1e-9) st.push(i, j, tip(d));
   }
   const { nx, ny, h, x0, y0 } = g;
-  const S = { r, R, c, n, zFloor, x: (i) => x0 + i * c, y: (j) => y0 + j * c };
+  const S = { r, R, rc: prof.rc || 0, c, n, zFloor, x: (i) => x0 + i * c, y: (j) => y0 + j * c };
   // Lowest the tip can go with the tool's axis on node i, j (null: no part
   // within reach), never below zFloor
   S.drop = (i, j) => {
@@ -623,7 +623,10 @@ function surface3d(path, g, tool, fd, ridge, zFloor, above, steep = true) {
   const S = toolOnSurface(g, tool, zFloor);
   if (!S.box) return;
   const { r, c } = S, { i0, i1, j0, j1 } = S.box;
-  const over = tool.kind === 'ball' ? 2 * Math.sqrt(Math.max(0, 2 * r * ridge - ridge * ridge)) : fd.stepover * 0.5;
+  // Spaced for the ridge the round part leaves (a bull nose's corners on a
+  // slope; its flat leaves none on a floor)
+  const rc = S.rc;
+  const over = rc > 0 ? 2 * Math.sqrt(Math.max(0, 2 * rc * ridge - ridge * ridge)) : fd.stepover * 0.5;
   const every = Math.max(1, Math.floor(Math.min(over, r) / c + 1e-9));
   const reach = 3 * every * c + 1e-6;
   const rows = [];

@@ -696,7 +696,7 @@ export function mountApp(root, host, engine) {
   }
 
   function toolChoices(o) {
-    const kinds = o.kind === 'drill' ? ['drill'] : o.kind === 'face' ? ['surfacing', 'flat'] : o.kind === 'finish3d' ? ['ball', 'flat'] : o.kind === 'chamfer' ? ['vbit', 'chamfer'] : o.kind === 'thread' ? ['threadmill'] : ['flat'];
+    const kinds = o.kind === 'drill' ? ['drill'] : o.kind === 'face' ? ['surfacing', 'flat'] : o.kind === 'finish3d' ? ['ball', 'bullnose', 'flat'] : o.kind === 'chamfer' ? ['vbit', 'chamfer'] : o.kind === 'thread' ? ['threadmill'] : ['flat'];
     const list = S.tools.filter((t) => kinds.includes(t.kind) && (o.angle == null || Math.abs(t.angle / 2 - o.angle) <= 1.5)).sort((a, b) => b.diameter - a.diameter);
     return list.some((t) => t.id === o.tool.id) ? list : [o.tool, ...list];
   }

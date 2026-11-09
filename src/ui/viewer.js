@@ -510,6 +510,15 @@ export class Viewer {
       const h = r / Math.tan(((tool.angle || (tool.kind === 'drill' ? 118 : 90)) * Math.PI) / 360);
       tip = new THREE.Mesh(new THREE.ConeGeometry(r, h, 48), metal);
       tip.rotation.x = -Math.PI / 2; tip.position.z = h / 2;
+    } else if (tool.kind === 'bullnose') {
+      // Bull nose / bowl: its side profile turned around the axis, flat
+      // bottom, rounded corners (and any taper) up to the flutes' top
+      const p = toolProfile(tool, flute), pts = [];
+      for (let k = 0; k <= 32; k++) { const d = (p.R * k) / 32; pts.push(new THREE.Vector2(d, Math.min(flute, p.tip(d)))); }
+      pts.push(new THREE.Vector2(p.R, flute), new THREE.Vector2(0, flute));
+      const both = metal.clone(); both.side = THREE.DoubleSide; // the lathe's faces point either way
+      tip = new THREE.Mesh(new THREE.LatheGeometry(pts, 64), both);
+      tip.rotation.x = Math.PI / 2;
     } else if (tool.kind === 'ball' && tool.taper > 0) {
       // Tapered ball nose: the round tip up to where the cone meets it, the
       // cone up the flutes (no wider than the shank), then straight

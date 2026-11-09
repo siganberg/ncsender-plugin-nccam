@@ -1226,3 +1226,44 @@ test('a Tapered Ball Nose finishes 3D with its cone kept off the walls', () => {
   blind.ops.find((o) => o.kind === 'finish3d').tool = finish.tool;
   assert.ok(check3d(mesh, blind).gouges > 0);
 });
+
+// SpeTool W08002 bowl and tray bit as the Fusion 360 importer saves it: 3/4"
+// across, 1/4" corners (1/4" flat between them), 5/8" flutes, 1/2" shank.
+// And a 1/4" bull nose end mill with 1/16" corners for the 3D test.
+const BOWL = { id: 12, toolId: 12, name: '3/4" Bowl & Tray', type: 'bull-nose', diameter: 19.05, dimensions: { radius: 6.35, flute_length: 15.875, shank_diameter: 12.7 } };
+const BULL = { id: 13, toolId: 13, toolNumber: 7, name: '1/4" Bull Nose', type: 'bull-nose', diameter: 6.35, dimensions: { radius: 1.5875, flute_length: 25 } };
+
+test('a Bull Nose / Bowl bit: flat bottom, round corners, never picked on its own', () => {
+  const [bowl, bull, square, big] = N.normalizeTools([BOWL, BULL,
+    { id: 14, name: 'no radius', type: 'bull-nose', diameter: 6 },
+    { id: 15, name: 'too round', type: 'bull-nose', diameter: 6, dimensions: { radius: 5, taper_angle: 10 } }]);
+  assert.deepEqual([bowl.kind, bowl.corner, bull.corner, square.corner, big.corner, big.taper], ['bullnose', 6.35, 1.5875, 0, 3, 10]);
+  const p = N.toolProfile(bowl);
+  assert.equal(p.R, 9.525);
+  assert.equal(p.tip(0), 0);
+  assert.equal(p.tip(3.175), 0); // the flat, 1/4" across
+  assert.ok(Math.abs(p.tip(p.R) - 6.35) < 1e-6); // the top of the corner
+  assert.ok(Math.abs(p.tip(3.175 + 3) - (6.35 - Math.sqrt(6.35 ** 2 - 9))) < 1e-9);
+  assert.equal(N.toolProfile(square).tip(3), 0); // no corners: flat
+  // Only end mills and balls are picked: the bowl and bull nose aren't
+  const mesh = N.orient(domeOnPlinth(), 'top');
+  const plan = N.plan(mesh, N.normalizeTools([...LIBRARY, BOWL, BULL]), N.defaultJob(N.analyze(mesh)));
+  assert.ok(plan.ops.every((o) => o.tool.kind !== 'bullnose'));
+});
+
+test('a bull nose picked to finish 3D follows the surface with its corners', () => {
+  const mesh = N.orient(domeOnPlinth(), 'top');
+  const lib = N.normalizeTools([...BALL, BULL]);
+  const job = { ...N.defaultJob(N.analyze(mesh)), toolOverride: { finish3d: 13 } };
+  const p = N.toolpaths(N.plan(mesh, lib, job));
+  const finish = p.ops.find((o) => o.kind === 'finish3d');
+  assert.equal(finish.tool.id, 13);
+  const c = check3d(mesh, p);
+  assert.equal(c.gouges, 0);
+  assert.equal(c.collisions, 0);
+  assert.ok(c.meanLeft < 0.15, `mean left ${c.meanLeft}`);
+  // Planned as a ball of its diameter, its flat bottom cuts into the dome
+  const blind = N.toolpaths(N.plan(mesh, lib.map((t) => (t.id === 13 ? { ...t, kind: 'ball' } : t)), job));
+  blind.ops.find((o) => o.kind === 'finish3d').tool = finish.tool;
+  assert.ok(check3d(mesh, blind).gouges > 0);
+});
