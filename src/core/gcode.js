@@ -1,7 +1,10 @@
 // The program: every enabled operation's moves in work coordinates, with
 // a tool change wherever the tool changes. Only G0/G1, G4, M3/M5, M6 and
-// M30, so it runs the same on grblHAL, FluidNC and classic Grbl. A pen or
-// drag knife doesn't spin: no M3 (or wait) for it.
+// M30, so it runs the same on grblHAL, FluidNC and classic Grbl. The one
+// exception: $SAFEZ for the retract, which ncSender itself runs (only when
+// it's new enough, see ncsender.js; else G53 G0 Z). A program saved with
+// it needs ncSender to run it. A pen or drag knife doesn't spin: no M3 (or
+// wait) for it.
 import { toolNumber, spins, MATERIALS, FINISHES } from './tools.js';
 
 const num = (v) => {
@@ -21,8 +24,12 @@ const ZERO_NAMES = {
 };
 
 export function gcode(p, opts = {}) {
-  const { name = 'part', numbering = 'slot', safeZHeightMm = null, spindleDelay = 3 } = opts;
-  const safeZ = Number.isFinite(safeZHeightMm) ? `G53 G0 Z${num(safeZHeightMm)}` : 'G53 G0 Z0';
+  const { name = 'part', numbering = 'slot', safeZHeightMm = null, safeZCommand = false, spindleDelay = 3 } = opts;
+  // safeZCommand: ncSender runs $SAFEZ (see ncsender.js), so the retract
+  // follows its Safe Z setting when the program runs. Older ones get the
+  // height written in.
+  const safeZ = safeZCommand ? '$SAFEZ'
+    : Number.isFinite(safeZHeightMm) ? `G53 G0 Z${num(safeZHeightMm)}` : 'G53 G0 Z0';
   const z0 = p.zero;
   const s = p.stock;
   const lines = [
