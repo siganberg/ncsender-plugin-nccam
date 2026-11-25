@@ -180,6 +180,8 @@
   .ncc-busy-tip[hidden] { display: none; }
   .ncc-spin { width: 22px; height: 22px; border-radius: 50%; border: 3px solid color-mix(in srgb, var(--color-accent) 25%, transparent); border-top-color: var(--color-accent); animation: ncc-spin .8s linear infinite; }
   @keyframes ncc-spin { to { transform: rotate(360deg); } }
+  .ncc-spin.sm { width: 14px; height: 14px; border-width: 2px; flex: none; }
+  .ncc-working { display: flex; align-items: center; gap: 8px; }
   .ncc-found { display: flex; flex-direction: column; gap: 10px; }
 
   /* Step 2 */
@@ -263,7 +265,7 @@
 <script>
 (function () {
   var PORT = __SERVER_PORT__;
-  var BUILD = '0.1.8-mww6qc2h';
+  var BUILD = '0.1.8-mww6szhk';
   var base = window.ncSender && typeof window.ncSender.getApiBaseUrl === 'function' ? window.ncSender.getApiBaseUrl(PORT) : '';
   var file = function (name) { return base + '/api/plugins/com.ncsender.nccam/icon?file=' + encodeURIComponent(name); };
   var root = document.getElementById('ncc-root');

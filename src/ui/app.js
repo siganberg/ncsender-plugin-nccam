@@ -474,7 +474,10 @@ export function mountApp(root, host, engine) {
   }
 
   function foundCard() {
-    if (!S.plan) return `<div class="ncc-card"><div class="ncc-label">Found in this part</div><div class="ncc-row-sub">${S.planning ? 'Looking…' : ''}</div></div>`;
+    // Still working: a spinner and the seconds so far, so a long first look doesn't seem stuck
+    const working = (text) => `<div class="ncc-row-sub ncc-working"><span class="ncc-spin sm"></span>${text}<span class="ncc-elapsed" data-elapsed></span></div>`;
+    if (!S.plan) return `<div class="ncc-card"><div class="ncc-label">Found in this part</div>${S.planning ? `${working('Looking for pockets, holes, threads and surfaces\u2026')}
+      <div class="ncc-row-sub" data-longtip hidden>A detailed part takes a while the first time (a minute or more for a large STL). It\u2019s still working while the circle turns.</div>` : ''}</div>`;
     // The same feature more than once is one line: "5 pockets, through"
     const groups = new Map();
     for (const o of S.plan.ops.filter((x) => x.kind !== 'face' && x.kind !== 'corners' && x.kind !== 'finish3d' && x.kind !== 'rest3d' && x.id !== 'chamfer' && !x.pilot)) {
@@ -484,7 +487,7 @@ export function mountApp(root, host, engine) {
       groups.set(name, g);
     }
     const label = (g) => (g.n < 2 ? g.name : g.name.replace(/^(Pocket|Step), /, (_, w) => `${g.n} ${w.toLowerCase()}s, `));
-    return `<div class="ncc-card"><div class="ncc-label">Found in this part</div><div class="ncc-found">${[...groups.values()].map((g) =>
+    return `<div class="ncc-card"><div class="ncc-label">Found in this part</div>${S.planning ? working('Updating for your changes\u2026') : ''}<div class="ncc-found">${[...groups.values()].map((g) =>
       `<div class="ncc-row"><span style="display: flex; align-items: center; gap: 8px"><span class="ncc-swatch" style="background: ${OP_COLORS[g.o.kind]}"></span>${esc(label(g))}</span><span class="ncc-ok">✓</span></div>`).join('') || '<div class="ncc-row-sub">Nothing to cut from this side.</div>'}</div></div>`;
   }
 
