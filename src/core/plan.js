@@ -12,7 +12,8 @@ import { partHeights } from './sim.js';
 import * as C from './clip.js';
 import { feeds, FINISHES, MATERIALS, materialKey, tabDefaults, LOW_SPINDLE_MAX } from './tools.js';
 import { len, num } from './units.js';
-import { tabSpots } from './paths.js';
+import { tabSpots, toolpaths } from './paths.js';
+import { runTime } from './gcode.js';
 
 const EPS = 0.01;
 const TINY = 0.05; // mm²: smaller leftovers are not worth a tool
@@ -34,6 +35,8 @@ export function defaultJob(analysis) {
     stock: { fit: true, margin: 2, extraTop: 1, width: analysis.size[0] + 4, depth: analysis.size[1] + 4, thickness: analysis.size[2] + 1 },
     zero: { xy: 'front-left', z: 'top' },
     tabs: { enabled: true, count: 4, ...tabDefaults('mdf') },
+    // A drill takes the middle of a hole first when that's faster
+    drillPilots: true,
     throughDepth: 0.3,
     disabled: {}, toolOverride: {},
   };
@@ -78,6 +81,8 @@ const rect = (b) => [[[b.minX, b.minY], [b.maxX, b.minY], [b.maxX, b.maxY], [b.m
 const sameD = (a, b) => Math.abs(a - b) < 0.05;
 // mm: a drill this much smaller than a hole (or 6% of it) still drills it
 const DRILL_UNDER = 0.25;
+// Seconds a tool change costs, as runTime counts it
+const TOOL_CHANGE = 30;
 
 // A hole: one loop, every point the same distance from the middle.
 function asCircle(region) {
@@ -409,9 +414,18 @@ export function plan(mesh, tools, job, limits = {}) {
         if (em) { borer = em; pilotDrill = pd; bottom = Math.max(h.zBottom, h.zTop - (em.fluteLength || Infinity)); break; }
       }
     }
+    // A drill pilot when it's faster: drill the middle, then an end mill
+    // rounds the hole to size from it (bore), instead of spiraling the
+    // whole hole down with a smaller, slower end mill
+    let saved = 0;
+    if (tool && job.drillPilots !== false) {
+      const faster = fasterPilot(h, tool, near, region);
+      if (faster) { borer = faster.em; pilotDrill = faster.pd; saved = faster.saved; }
+    }
     if (borer) {
       const pilot = drillOp(pilotDrill, n > 1 ? `Drill ${n} pilot holes` : 'Drill a pilot hole', `${what} · then ${L(h.d)} with an end mill`, { pilot: true });
       if (bottom > h.zBottom + 1e-6) warnings.push({ kind: 'drill', text: `${n > 1 ? `The ${n} ${what} holes are` : `The ${what} hole is`} cut to size down to the part's bottom with ${borer.name} (too short to break through; the pilot does): check the bottom edge for fuzz.` });
+      if (saved >= 30) pilot.detail += ` · about ${Math.round(saved / 60) || 1} min faster`;
       return add({ kind: 'hole', label: n > 1 ? `Cut ${n} holes to size` : 'Cut the hole to size', tool: take(borer), zTop: h.zTop, zBottom: bottom, region, centers: h.centers, bore: true, after: pilot.id, detail: `${what} · from the pilot` });
     }
     if (!tool) {
@@ -422,6 +436,35 @@ export function plan(mesh, tools, job, limits = {}) {
     }
     const pilot = near ? drillOp(near, n > 1 ? `Drill ${n} pilot holes` : 'Drill a pilot hole', `${what} · then ${L(h.d)} with an end mill`, { pilot: true }) : null;
     return add({ kind: 'hole', label: n > 1 ? `Cut ${n} holes` : 'Cut the hole', tool: take(tool), zTop: h.zTop, zBottom: h.zBottom, region, centers: h.centers, detail: `${what} · spiral`, ...(pilot ? { after: pilot.id } : {}) });
+  }
+
+  // The fastest drill pilot and end mill for a hole, when they beat
+  // spiraling it with `tool` (and `near`'s pilot, if any) by 10 % or more.
+  // Times come from the real paths (toolpaths, runTime) for these holes
+  // alone, plus a tool change for each tool the program doesn't use yet.
+  // The end mill must drop into the pilot and reach its wall in one circle
+  // (as for a bore), and both must be long enough for the hole.
+  function fasterPilot(h, tool, near, region) {
+    const depth = h.zTop - h.zBottom;
+    const base = { zTop: h.zTop, zBottom: h.zBottom, centers: h.centers, region };
+    const seconds = (list) => {
+      const q = { stock, analysis, job, ops: list.map((o, i) => ({ ...base, ...o, id: `est${i}`, enabled: true, feeds: opFeeds(o.tool) })) };
+      toolpaths(q);
+      runTime(q, { maxRapid: limits.maxFeed || 5000 });
+      const fresh = new Set(list.map((o) => o.tool.id).filter((id) => !used.has(id))).size;
+      return q.ops.reduce((sum, o) => sum + (o.seconds || 0), 0) + TOOL_CHANGE * fresh;
+    };
+    const spiral = seconds([...(near ? [{ kind: 'drill', tool: near }] : []), { kind: 'hole', tool }]);
+    let best = null;
+    for (const pd of drills) {
+      if (!(pd.diameter < h.d - 0.05 && fluteOk(pd, depth))) continue;
+      for (const em of flats) {
+        if (!(em.diameter < h.d - 0.02 && em.diameter <= pd.diameter + 0.05 && pd.diameter + 2 * em.diameter >= h.d + 0.1 && fluteOk(em, depth))) continue;
+        const t = seconds([{ kind: 'drill', tool: pd }, { kind: 'hole', bore: true, tool: em }]);
+        if (!best || t < best.t) best = { pd, em, t };
+      }
+    }
+    return best && best.t < spiral * 0.9 ? { pd: best.pd, em: best.em, saved: spiral - best.t } : null;
   }
 
   // Threads modeled in a hole: a single-form thread mill on a helix, after

@@ -29,6 +29,10 @@ export const spins = (tool) => !NO_SPINDLE.has(tool.kind ?? toolKind(tool));
 export function toolKind(tool) {
   const t = String(tool.type || '').toLowerCase().replace(/[-_]/g, ' ');
   if (NO_SPINDLE.has(t)) return t;
+  // A laser module (its type, or a library that files one as flat with
+  // "laser" in the name) cuts nothing ncCAM plans: never picked as an end
+  // mill, however small and long it looks
+  if (t === 'laser' || /\blaser\b/i.test(String(tool.name || ''))) return 'laser';
   // Shaped router bits a library often files as flat (keyhole, roundover,
   // cove, bowl): they cut a profile, not a wall or a floor. Only for flat:
   // a cove or core-box bit filed as ball is a round-nose bit, a bowl bit

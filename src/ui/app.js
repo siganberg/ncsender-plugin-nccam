@@ -226,7 +226,7 @@ export function mountApp(root, host, engine) {
     S.analysis = r.analysis;
     const keep = S.job;
     S.job = N.defaultJob(r.analysis);
-    if (keep) Object.assign(S.job, { material: keep.material, finish: keep.finish, zero: keep.zero, tabs: keep.tabs, chamfer: keep.chamfer, stock: { ...S.job.stock, fit: keep.stock.fit, margin: keep.stock.margin, extraTop: keep.stock.extraTop } });
+    if (keep) Object.assign(S.job, { material: keep.material, finish: keep.finish, zero: keep.zero, tabs: keep.tabs, chamfer: keep.chamfer, drillPilots: keep.drillPilots, stock: { ...S.job.stock, fit: keep.stock.fit, margin: keep.stock.margin, extraTop: keep.stock.extraTop } });
     S.loading = '';
     return replan();
   }
@@ -653,9 +653,20 @@ export function mountApp(root, host, engine) {
     // Landscape: list | drawing over Finish + Tools. Portrait: the drawing
     // stays on top and only the list (Finish + Tools at its end) scrolls.
     return `<div class="ncc-plan">
-        <div class="ncc-plan-list" data-keep-scroll="ops">${threeD()}<div class="ncc-ops">${rows}</div>${chamferCard()}${planHints(false)}<div class="ncc-plan-pair-in">${pair}</div></div>
+        <div class="ncc-plan-list" data-keep-scroll="ops">${threeD()}<div class="ncc-ops">${rows}</div>${chamferCard()}${pilotCard()}${planHints(false)}<div class="ncc-plan-pair-in">${pair}</div></div>
         <div class="ncc-card ncc-viewcard ncc-plan-view"><div data-viewer></div></div>
         <div class="ncc-plan-pair">${pair}</div>
+      </div>`;
+  }
+
+  // Drill pilot holes when it's faster: shown when the part has holes and
+  // the Tool Library has a drill
+  function pilotCard() {
+    if (!S.plan.ops.some((o) => o.kind === 'hole' || o.pilot) || !S.tools.some((t) => t.kind === 'drill')) return '';
+    const on = S.job.drillPilots !== false, used = S.plan.ops.some((o) => o.pilot);
+    const sub = !on ? 'Off: a drill pilots a hole only when it\u2019s just under the hole\u2019s size.' : used ? 'A drill takes the middle first where that\u2019s faster, tool change included; an end mill then cuts the hole to size.' : 'On: no hole here is faster with a pilot, so an end mill cuts each one.';
+    return `<div class="ncc-card" style="margin-top: 10px">
+        <div class="ncc-row"><div class="ncc-row-text"><div class="ncc-row-title">Drill pilot holes when it\u2019s faster</div><div class="ncc-row-sub">${esc(sub)}</div></div><button class="ncc-toggle" type="button" role="switch" aria-checked="${on}" aria-label="Drill pilot holes when it\u2019s faster" data-toggle="pilots"></button></div>
       </div>`;
   }
 
@@ -1041,6 +1052,7 @@ export function mountApp(root, host, engine) {
     if (d.scale === 'reset') return rescale({ scale: [1, 1, 1] });
     if (d.scale === 'inch') return rescale({ scale: [N.units.INCH, N.units.INCH, N.units.INCH] });
     if (d.toggle === 'tabs') { S.job.tabs.enabled = !S.job.tabs.enabled; return changed(); }
+    if (d.toggle === 'pilots') { S.job.drillPilots = S.job.drillPilots === false; return changed(); }
     if (d.toggle === 'savefm') {
       S.saveToFm = !S.saveToFm;
       render();
