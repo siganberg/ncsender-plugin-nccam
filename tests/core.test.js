@@ -1379,3 +1379,27 @@ test('a bull nose picked to finish 3D follows the surface with its corners', () 
   blind.ops.find((o) => o.kind === 'finish3d').tool = finish.tool;
   assert.ok(check3d(mesh, blind).gouges > 0);
 });
+
+test('$SAFEZ: written when ncSender runs it, the height written in when not', async () => {
+  const { p } = await make('bracket.step');
+  const old = N.gcode(p, { safeZHeightMm: -5 });
+  const g = N.gcode(p, { safeZHeightMm: -5, safeZCommand: true });
+  assert.ok(!/G53/.test(g), 'no G53 left');
+  // one before each of the 4 tool changes, one at the end
+  assert.equal(g.split('\n').filter((l) => l === '$SAFEZ').length, 5);
+  assert.equal(g, old.replaceAll('G53 G0 Z-5', '$SAFEZ'));
+  assert.ok(N.gcode(p).includes('G53 G0 Z0'));
+});
+
+test('$SAFEZ: from ncSender 2.0.228 and ncSender Pro 2.0.326', () => {
+  const ok = N.safeZVersionOk;
+  assert.equal(ok('community', '2.0.227'), false);
+  assert.equal(ok('community', '2.0.228'), true);
+  assert.equal(ok(undefined, '2.0.228'), true);
+  assert.equal(ok('pro', '2.0.325'), false);
+  assert.equal(ok('pro', '2.0.326'), true);
+  assert.equal(ok('pro', '2.0.326-beta.1'), false);
+  assert.equal(ok('community', '2.0.230-dev'), true);
+  assert.equal(ok('community', 'nonsense'), false);
+  assert.equal(ok('community', null), false);
+});
