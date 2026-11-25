@@ -1,7 +1,15 @@
-# Feeds, speeds and pass depth (planned, not started)
+# Feeds, speeds and pass depth
 
 Planned 2026-11-08. Bring in what QuickCut has learned since it copied ncCAM's formula, and make pass
 depth depend on the tool and the cut, not only on the bit's width.
+
+**Done 2026-11-24:** `feeds()` now calls `startingFeeds` from
+[ncsender-feeds](https://github.com/tmuka/ncsender-feeds) (QuickCut's formula as a library, pinned in
+`package.json`), then applies the Finish. That brings in everything under "What QuickCut has that
+ncCAM doesn't" below except the Style menu (the Finish stays), plus a slower spindle for big bits and
+no pass deeper than `fluteLength`. Plastic is now HDPE, Acrylic and Polycarbonate; an old `plastic`
+job reads as Acrylic. Pass depth items 2–4 and the flute-length fallback in item 1 are still to do,
+in the library.
 
 ## Where it stands
 
