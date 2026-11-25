@@ -1,13 +1,15 @@
 // Tool Library entries as ncCAM uses them, and speeds and feeds per material.
+import { startingFeeds, MATERIALS as FEED_MATERIALS } from 'ncsender-feeds';
 
-export const MATERIALS = {
-  softwood: { name: 'Softwood', note: 'Pine, cedar', rpm: 18000, chip: 0.012, maxChip: 0.25, stepdown: 0.5, stepover: 0.45, ramp: 5 },
-  hardwood: { name: 'Hardwood', note: 'Oak, maple, walnut', rpm: 18000, chip: 0.009, maxChip: 0.2, stepdown: 0.35, stepover: 0.4, ramp: 4 },
-  mdf: { name: 'MDF / Plywood', note: 'Sheet goods', rpm: 18000, chip: 0.012, maxChip: 0.25, stepdown: 0.5, stepover: 0.45, ramp: 5 },
-  plastic: { name: 'Plastic', note: 'Acrylic, HDPE', rpm: 16000, chip: 0.01, maxChip: 0.2, stepdown: 0.3, stepover: 0.4, ramp: 3 },
-  aluminum: { name: 'Aluminum', note: '6061', rpm: 18000, chip: 0.003, maxChip: 0.05, stepdown: 0.1, stepover: 0.25, ramp: 2 },
-  foam: { name: 'Foam', note: 'Tooling board', rpm: 12000, chip: 0.02, maxChip: 0.4, stepdown: 1, stepover: 0.6, ramp: 10 },
-};
+// Speeds and feeds by material come from ncsender-feeds (QuickCut's
+// startingFeeds as a library), so every plugin starts from the same numbers.
+// Change a material there, not here.
+export const MATERIALS = FEED_MATERIALS;
+
+// A material ncCAM no longer lists, as one it does: Plastic split into
+// HDPE, Acrylic and Polycarbonate.
+const RENAMED = { plastic: 'acrylic' };
+export const materialKey = (m) => RENAMED[m] || (MATERIALS[m] ? m : 'mdf');
 
 // Fast cuts harder and skips the finishing pass; Smooth takes lighter steps.
 export const FINISHES = {
@@ -111,18 +113,36 @@ export function vAngle(t) {
   return a > 0 && a < 180 ? a : 90;
 }
 
+// The spindle's speed range from the controller's settings (ncSender's
+// /api/firmware): $30/$31, or $730/$731 when grblHAL's Default spindle
+// ($395) is PWM2. A VFD reads $30/$31 too. A range that can't be a router's
+// (a laser's 0-1000 left there, say) is flagged by plan() as a warning.
+export function spindleRange(settings = {}) {
+  const val = (k) => { const v = parseFloat(settings[k]?.value); return Number.isFinite(v) && v > 0 ? v : undefined; };
+  const def = settings['395'];
+  const name = def?.format ? String(def.format).split(',').map((x) => x.trim())[parseInt(def.value, 10)] : undefined;
+  return name === 'PWM2' ? { maxRpm: val('730'), minRpm: val('731') } : { maxRpm: val('30'), minRpm: val('31') };
+}
+
+// Below this, a Spindle max is a laser's or a mistake, not a router's
+export const LOW_SPINDLE_MAX = 5000;
+
+// limits: the machine's { maxFeed, maxPlunge, maxRpm, minRpm }. The
+// finish then scales the feed, the depth per pass and the stepover; no pass
+// goes deeper than the flutes, when the Tool Library gives their length.
 export function feeds(tool, material, finish, limits = {}) {
-  const m = MATERIALS[material] || MATERIALS.mdf;
+  const key = materialKey(material), m = MATERIALS[key];
   const f = FINISHES[finish] || FINISHES.balanced;
-  const maxRpm = limits.maxRpm || 24000, minRpm = limits.minRpm || 0;
-  const rpm = Math.round(Math.min(maxRpm, Math.max(minRpm, m.rpm)));
-  const chip = Math.min(m.maxChip, m.chip * tool.diameter);
-  const maxFeed = Math.min(limits.maxFeed || 4000, 4000);
-  const feed = Math.round(Math.min(maxFeed, Math.max(150, rpm * tool.flutes * chip * f.feed)));
+  const fluteMm = tool.fluteLength > 0 ? tool.fluteLength : 0;
+  const s = startingFeeds(tool.diameter, tool.flutes, key, limits, 'average', { fluteMm });
+  const feed = Math.round(Math.min(s.maxFeedMm, Math.max(150, s.feedMm * f.feed)));
+  const stepdown = Math.max(0.05, s.stepMm * f.stepdown);
   return {
-    rpm, feed,
-    plunge: Math.round(Math.max(60, feed * 0.3)),
-    stepdown: Math.max(0.05, tool.diameter * m.stepdown * f.stepdown),
+    rpm: s.rpm, feed,
+    // 30 % of the feed, at most 30 % of the starting feed (1200) as the
+    // library does, and within the Z max rate ($112)
+    plunge: Math.round(Math.min(limits.maxPlunge || Infinity, Math.min(limits.maxFeed || 4000, 4000) * 0.3, Math.max(60, feed * 0.3))),
+    stepdown: fluteMm ? Math.min(stepdown, fluteMm) : stepdown,
     stepover: Math.max(0.05, tool.diameter * Math.min(0.9, m.stepover * f.stepover)),
     rampAngle: m.ramp,
   };

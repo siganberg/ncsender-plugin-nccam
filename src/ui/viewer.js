@@ -6,7 +6,7 @@ import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 export const OP_COLORS = { face: '#93a2b4', pocket: '#1abc9c', hole: '#4ea1ff', drill: '#4ea1ff', step: '#2ecc71', corners: '#48d1b4', cutout: '#a78bfa', rough3d: '#f5a524', rest3d: '#e3c341', finish3d: '#ff7a59', chamfer: '#f472b6', thread: '#c084fc' };
 
 export const STOCK_COLORS = {
-  softwood: '#d8b38a', hardwood: '#9c6b45', mdf: '#b59672', plastic: '#d9e2ea', aluminum: '#b9c1c9', foam: '#c7b8a5',
+  softwood: '#d8b38a', hardwood: '#9c6b45', mdf: '#b59672', hdpe: '#eceee8', acrylic: '#d9e2ea', polycarbonate: '#dce4e0', plastic: '#d9e2ea', aluminum: '#b9c1c9', foam: '#c7b8a5',
 };
 
 // Columns cut below the stock's bottom are holes: not drawn. With flat set,

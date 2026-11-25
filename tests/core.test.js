@@ -1155,3 +1155,55 @@ test('a V-bit picked by hand too small for the chamfer is not used, and said so'
   assert.ok(c && c.tool.id !== 30, c?.tool.name);
   assert.ok(p.warnings.some((w) => /Tiny 60° V-bit is too small/.test(w.text)));
 });
+
+test('feeds come from ncsender-feeds: QuickCut numbers, then the finish', async () => {
+  const { startingFeeds } = await import('ncsender-feeds');
+  const bit = { diameter: 6.35, flutes: 2, fluteLength: 22 };
+  const s = startingFeeds(6.35, 2, 'mdf');
+  const f = N.feeds(bit, 'mdf', 'balanced');
+  assert.equal(f.rpm, s.rpm);
+  assert.equal(f.feed, s.feedMm);
+  assert.equal(f.stepdown, s.stepMm);
+  assert.equal(N.feeds(bit, 'mdf', 'fast').feed, Math.round(s.feedMm * 1.15));
+  assert.deepEqual(Object.keys(N.MATERIALS), ['softwood', 'hardwood', 'mdf', 'hdpe', 'acrylic', 'polycarbonate', 'aluminum', 'foam']);
+});
+
+test('feeds: the old Plastic reads as Acrylic, an unknown material as MDF', () => {
+  const bit = { diameter: 6.35, flutes: 2 };
+  assert.deepEqual(N.feeds(bit, 'plastic', 'balanced'), N.feeds(bit, 'acrylic', 'balanced'));
+  assert.deepEqual(N.feeds(bit, 'balsa', 'balanced'), N.feeds(bit, 'mdf', 'balanced'));
+  assert.equal(N.materialKey('plastic'), 'acrylic');
+});
+
+test('feeds: no pass deeper than the flutes, and the plunge within $112', () => {
+  const big = { diameter: 101.6, flutes: 2, fluteLength: 25 }; // a made-up 4" ball
+  assert.equal(N.feeds(big, 'mdf', 'fast').stepdown, 25);
+  assert.ok(N.feeds({ diameter: 6.35, flutes: 2 }, 'mdf', 'balanced', { maxPlunge: 500 }).plunge <= 500);
+  // A 1" surfacing bit gets the machine's 5000 feed, but its plunge stays at
+  // 4000 x 0.3 = 1200 when $112 isn't known
+  const surf = N.feeds({ diameter: 25.4, flutes: 4 }, 'mdf', 'balanced', { maxFeed: 5000 });
+  assert.equal(surf.feed, 5000);
+  assert.equal(surf.plunge, 1200);
+});
+
+test('feeds: a big bit turns the spindle slower to keep its chip', () => {
+  const f = N.feeds({ diameter: 12.7, flutes: 2 }, 'mdf', 'balanced');
+  assert.ok(f.rpm < 18000 && f.rpm >= 12000, `rpm ${f.rpm}`);
+});
+
+test('spindle range: $30/$31, or PWM2\'s when it is the Default spindle; a low max is flagged', async () => {
+  const fmt = 'PWM,PWM2,Huanyang v1,Huanyang P2A,Durapulse GS20';
+  const fw = (def, max = '24000.000') => ({ 30: { value: max }, 31: { value: '1000.000' }, 730: { value: '1000' }, 731: { value: '0' },
+    ...(def == null ? {} : { 395: { value: String(def), format: fmt } }) });
+  // A Huanyang VFD (an SLB-EXT) and Grbl/FluidNC (no $395) read $30/$31
+  assert.deepEqual(N.spindleRange(fw(2)), { maxRpm: 24000, minRpm: 1000 });
+  assert.deepEqual(N.spindleRange(fw(null)), { maxRpm: 24000, minRpm: 1000 });
+  assert.deepEqual(N.spindleRange(fw(1)), { maxRpm: 1000, minRpm: undefined });
+  assert.deepEqual(N.spindleRange({}), { maxRpm: undefined, minRpm: undefined });
+  // A laser's 0-1000 left in $30 (from LightBurn's start G-code): a warning
+  const mesh = N.orient(await loadStep('bracket.step'), 'top');
+  const job = N.defaultJob(N.analyze(mesh));
+  const low = N.plan(mesh, tools, job, N.spindleRange(fw(2, '1000.000')));
+  assert.ok(low.warnings.some((w) => w.kind === 'spindle' && /Spindle max is 1000 RPM/.test(w.text)));
+  assert.ok(!N.plan(mesh, tools, job, N.spindleRange(fw(2))).warnings.some((w) => w.kind === 'spindle'));
+});

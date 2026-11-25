@@ -10,7 +10,7 @@
 import { analyze, slice, triangleNormal, chamferBands, findThread, threadName, areaFacing, SHARE_3D } from './mesh.js';
 import { partHeights } from './sim.js';
 import * as C from './clip.js';
-import { feeds, FINISHES, MATERIALS, tabDefaults } from './tools.js';
+import { feeds, FINISHES, MATERIALS, materialKey, tabDefaults, LOW_SPINDLE_MAX } from './tools.js';
 import { len, num } from './units.js';
 import { tabSpots } from './paths.js';
 
@@ -103,6 +103,7 @@ const fluteOk = (tool, depth) => !tool.fluteLength || tool.fluteLength + 1e-6 >=
 const fmt = (v) => (Math.round(v * 10) / 10).toString();
 
 export function plan(mesh, tools, job, limits = {}) {
+  job = { ...job, material: materialKey(job.material) };
   const L = (v) => len(v, job.units), n = (v) => num(v, job.units);
   const analysis = analyze(mesh);
   const stock = stockBox(analysis, job);
@@ -110,6 +111,9 @@ export function plan(mesh, tools, job, limits = {}) {
   const warnings = [];
   // job.surface3d: true or false when the user chose, else from the shape
   const use3d = job.surface3d ?? analysis.slopedShare > SHARE_3D;
+  // A Spindle max no router has (a laser's 0-1000 left in $30, say) slows
+  // every feed to match: say so, since the run time alone looks like a bug
+  if (limits.maxRpm > 0 && limits.maxRpm < LOW_SPINDLE_MAX) warnings.push({ kind: 'spindle', text: `Spindle max is ${Math.round(limits.maxRpm)} RPM in the controller's settings ($30), so every bit is planned at ${Math.round(limits.maxRpm)} RPM and its feed slowed to match. If the spindle goes faster, set its maximum in Firmware settings.` });
   if (analysis.undercut) warnings.push({ kind: 'undercut', text: 'Some features face the other side, so they can’t be reached from the top. Cut this side, then turn the part over for a second setup.' });
 
   const flats = tools.filter((t) => t.kind === 'flat').sort((a, b) => b.diameter - a.diameter);

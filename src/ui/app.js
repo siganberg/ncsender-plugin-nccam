@@ -120,7 +120,7 @@ export function mountApp(root, host, engine) {
     S.numbering = N.makeNumbering(S.numbering, S.tools, S.slots, probe);
     const fs = fw?.settings || {};
     const val = (k) => { const v = parseFloat(fs[k]?.value); return Number.isFinite(v) && v > 0 ? v : null; };
-    S.limits = { maxRpm: val('30') || undefined, minRpm: val('31') || undefined, maxFeed: Math.min(val('110') || Infinity, val('111') || Infinity, Infinity) };
+    S.limits = { ...N.spindleRange(fs), maxFeed: Math.min(val('110') || Infinity, val('111') || Infinity, Infinity), maxPlunge: val('112') || undefined };
     if (!Number.isFinite(S.limits.maxFeed)) delete S.limits.maxFeed;
     S.maxRapid = Math.min(val('110') || 5000, val('111') || 5000);
     if (val('130') && val('131')) S.travel = { x: val('130'), y: val('131'), z: val('132') };
@@ -499,7 +499,7 @@ export function mountApp(root, host, engine) {
   function planHints(modelStep) {
     if (!S.plan) return '';
     const slow = !modelStep && S.slow ? `<div class="ncc-hint">${ICONS.info}<span>${esc(S.slow)}</span></div>` : '';
-    const w = S.plan.warnings.filter((x) => !modelStep || x.kind === 'undercut' || x.kind === 'sloped' || x.kind === 'edges' || x.kind === 'surface3d');
+    const w = S.plan.warnings.filter((x) => !modelStep || x.kind === 'spindle' || x.kind === 'undercut' || x.kind === 'sloped' || x.kind === 'edges' || x.kind === 'surface3d');
     if (!w.length && modelStep) return `<div class="ncc-hint">${ICONS.info}<span>Everything can be cut from the top in one setup.</span></div>`;
     return slow + w.map((x) => `<div class="ncc-hint ${x.kind === 'notool' || x.kind === 'noball' ? 'bad' : ''}">${x.kind === 'notool' || x.kind === 'noball' ? ICONS.warn : ICONS.info}<span>${esc(x.text)}</span></div>`).join('');
   }

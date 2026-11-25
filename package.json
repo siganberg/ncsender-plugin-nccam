@@ -13,6 +13,7 @@
   "devDependencies": {
     "clipper-lib": "^6.4.2",
     "esbuild": "^0.28.2",
+    "ncsender-feeds": "github:tmuka/ncsender-feeds#v0.1.0",
     "ncsender-unit-input": "github:tmuka/ncsender-unit-input#v0.1.1",
     "occt-import-js": "^0.0.23",
     "playwright-core": "^1.64.1",
