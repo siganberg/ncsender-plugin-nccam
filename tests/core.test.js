@@ -1403,3 +1403,53 @@ test('$SAFEZ: from ncSender 2.0.228 and ncSender Pro 2.0.326', () => {
   assert.equal(ok('community', 'nonsense'), false);
   assert.equal(ok('community', null), false);
 });
+
+// The plate stretched to 15.9 mm: four 6.2 mm through holes. A 1/8" end
+// mill spirals them down in thin layers; a 5 mm drill can take the middle
+// first and the same end mill round them to size from it.
+const PILOT_LIB = N.normalizeTools([
+  { id: 1, toolId: 1, toolNumber: 1, name: '1/4" Flat End Mill', type: 'flat', diameter: 6.35, dimensions: { flute_length: 25 } },
+  { id: 3, toolId: 3, toolNumber: 3, name: '1/8" Flat End Mill', type: 'flat', diameter: 3.175, dimensions: { flute_length: 19 } },
+  { id: 20, toolId: 20, toolNumber: 4, name: '5mm drill bit', type: 'drill', diameter: 5, dimensions: { flute_length: 31.75 } },
+  // A laser filed as a flat with no flute length: never an end mill
+  { id: 30, toolId: 30, toolNumber: 9, name: 'LaserTree 60W laser module', type: 'flat', diameter: 0.152 },
+]);
+const deepPlate = async (z) => N.scaleMesh(N.orient(await loadStep('plate.step'), 'top'), [1, 1, z]);
+
+test('drill pilots: used when faster, holes still cut to size, and only when on', async () => {
+  const mesh = await deepPlate(3);
+  const run = (on) => N.toolpaths(N.plan(mesh, PILOT_LIB, { ...N.defaultJob(N.analyze(mesh)), drillPilots: on }));
+  const on = run(true), off = run(false);
+  const holes = (p) => p.ops.filter((o) => o.kind === 'hole' || o.kind === 'drill');
+  assert.deepEqual(holes(off).map((o) => [o.kind, o.tool.name, !!o.bore]), [['hole', '1/8" Flat End Mill', false]]);
+  assert.deepEqual(holes(on).map((o) => [o.kind, o.tool.name, !!o.bore]), [['drill', '5mm drill bit', false], ['hole', '1/8" Flat End Mill', true]]);
+  assert.ok(holes(on)[0].pilot);
+  // Faster overall, the drill change included
+  assert.ok(N.runTime(on) < N.runTime(off), `${N.runTime(on)} s vs ${N.runTime(off)} s`);
+  // Every hole cut through, nothing gouged, no rapid into the stock
+  const c = check(mesh, on);
+  assert.equal(c.gouges, 0);
+  assert.equal(c.collisions, 0);
+  const { hm } = c;
+  for (const h of holes(on)[1].centers) {
+    for (const [dx, dy] of [[0, 0], [2.9, 0], [0, -2.9], [-2.05, 2.05]]) {
+      const i = Math.round((h.x + dx - hm.x0) / hm.cell), j = Math.round((h.y + dy - hm.y0) / hm.cell);
+      assert.ok(hm.h[j * hm.nx + i] <= 1e-6, `stock left in the hole at ${dx}, ${dy}`);
+    }
+  }
+});
+
+test('drill pilots: not when the drill change costs more than it saves', async () => {
+  // The plate as drawn, 5.3 mm: the spiral is about as quick as drill + bore
+  const mesh = await deepPlate(1);
+  const p = N.plan(mesh, PILOT_LIB, N.defaultJob(N.analyze(mesh)));
+  assert.ok(!p.ops.some((o) => o.kind === 'drill'));
+});
+
+test('a laser module filed as a flat end mill is never picked to cut', async () => {
+  const mesh = await deepPlate(4); // 21 mm: no end mill here is long enough
+  const p = N.plan(mesh, PILOT_LIB, N.defaultJob(N.analyze(mesh)));
+  assert.equal(N.toolKind({ type: 'flat', name: 'LaserTree 60W laser module' }), 'laser');
+  assert.ok(!p.ops.some((o) => /laser/i.test(o.tool.name)));
+  assert.ok(p.warnings.some((w) => w.kind === 'notool' && /hole/.test(w.text)));
+});
