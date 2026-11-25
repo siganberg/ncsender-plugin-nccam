@@ -1,3 +1,5 @@
+import { toolProfile } from './tools.js';
+
 // Material removal on a heightmap: the stock is a grid of columns, and every
 // move lowers the columns under the tool. Used by the preview and by the
 // tests (a cut below the part is a gouge).
@@ -20,24 +22,18 @@ export class HeightMap {
 }
 
 // The tool's end as rings of columns around its center: how far above the
-// tip each one is (0 for a flat end).
-export function toolStamp(tool, cell) {
+// tip each one is (0 for a flat end). A tapered ball's cone counts up to
+// `height` above the tip (the stock's thickness: higher touches nothing).
+export function toolStamp(tool, cell, height) {
   // A thread mill's tooth cuts under the thread's crests, which a height
-  // grid can't show: seen from above it is its neck
-  const r = (tool.kind === 'threadmill' ? tool.neck : tool.diameter) / 2;
+  // grid can't show: seen from above it is its neck (toolProfile)
+  const { R: r, tip } = toolProfile(tool, height);
   const n = Math.ceil(r / cell);
   const out = [];
   for (let j = -n; j <= n; j++) for (let i = -n; i <= n; i++) {
     const d = Math.hypot(i, j) * cell;
     if (d > r + 1e-6) continue;
-    const dd = Math.min(d, r);
-    let dz = 0;
-    if (tool.kind === 'ball') dz = r - Math.sqrt(Math.max(0, r * r - dd * dd));
-    else if (tool.kind === 'vbit' || tool.kind === 'chamfer' || tool.kind === 'drill') {
-      const half = ((tool.angle || (tool.kind === 'drill' ? 118 : 90)) * Math.PI) / 360;
-      dz = dd / Math.tan(half);
-    }
-    out.push(i, j, dz, d);
+    out.push(i, j, tip(Math.min(d, r)), d);
   }
   const st = Float32Array.from(out);
   st.inner = Math.max(0, r - cell * Math.SQRT1_2); // reach a rapid is checked over
@@ -90,11 +86,7 @@ export function edgeMap(hm) {
 }
 
 export function cutMoveExact(hm, tool, a, b, opIndex) {
-  const r = (tool.kind === 'threadmill' ? tool.neck : tool.diameter) / 2, cell = hm.cell, rc = r / cell;
-  const tip = tool.kind === 'ball' ? (d) => r - Math.sqrt(Math.max(0, r * r - d * d))
-    : (tool.kind === 'vbit' || tool.kind === 'chamfer' || tool.kind === 'drill')
-      ? ((t) => (d) => d / t)(Math.tan(((tool.angle || (tool.kind === 'drill' ? 118 : 90)) * Math.PI) / 360))
-      : () => 0;
+  const { R: r, tip } = toolProfile(tool, hm.top - hm.bottom), cell = hm.cell, rc = r / cell;
   const flat = !tool.kind || tool.kind === 'flat' || tool.kind === 'surfacing' || tool.kind === 'threadmill';
   const { h, sx, sy, wx, wy, gap, deep, nx, ny } = hm;
   const band = 1.5 * cell, reach = rc + 1.5;
@@ -152,7 +144,7 @@ export function simulate(p, cell) {
   const collisions = [];
   p.ops.forEach((op, oi) => {
     if (!op.enabled || !op.moves) return;
-    const stamp = toolStamp(op.tool, hm.cell);
+    const stamp = toolStamp(op.tool, hm.cell, hm.top - hm.bottom);
     let prev = null;
     for (const m of op.moves) {
       if (prev && cutMove(hm, stamp, prev, m, !!m.r, oi)) collisions.push({ op: op.id, at: m });
