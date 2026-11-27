@@ -470,7 +470,8 @@ function bore(path, centers, r, fd, zTop, zBottom) {
     path.feed(c.x + R, c.y, zTop, fd.feed);
     // On a small circle the helix is steep: Z no faster than the plunge
     // rate (the machine, slower there anyway, keeps it under that)
-    const slope = (zTop - zBottom) / turns / (2 * Math.PI * R);
+    // (along the chords it runs, a little shorter than the arc)
+    const slope = (zTop - zBottom) / (turns * seg) / (2 * R * Math.sin(Math.PI / seg));
     const f = R > 1e-6 ? slopeFeed(slope, fd) : Math.min(fd.plunge, fd.feed);
     for (let k = 1; k <= (turns + 1) * seg; k++) {
       const a = (2 * Math.PI * k) / seg, z = Math.max(zBottom, zTop - ((zTop - zBottom) * k) / (turns * seg));
