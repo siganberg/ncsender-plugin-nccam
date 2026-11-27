@@ -1453,3 +1453,53 @@ test('a laser module filed as a flat end mill is never picked to cut', async () 
   assert.ok(!p.ops.some((o) => /laser/i.test(o.tool.name)));
   assert.ok(p.warnings.some((w) => w.kind === 'notool' && /hole/.test(w.text)));
 });
+
+// A round hole an end mill only a little smaller than it clears: the
+// user's 1/2" bit in a 13.4 mm hole ran a 0.35 mm circle at the ramp angle,
+// where the machine's acceleration ($120/$121) caps the speed near
+// sqrt(a * R), and crawled down
+function circleOp(kind, holeR, d, accel) {
+  const circ = Array.from({ length: 128 }, (_, i) => [holeR * Math.cos((Math.PI * i) / 64), holeR * Math.sin((Math.PI * i) / 64)]);
+  const tool = { id: 1, name: 'end mill', kind: 'flat', diameter: d, flutes: 2 };
+  const op = { id: 'a', kind, enabled: true, tool, feeds: N.feeds(tool, 'mdf', 'fast', accel ? { accel } : {}), zTop: 0, zBottom: -12,
+    region: [circ], centers: [{ x: 0, y: 0, d: 2 * holeR }], bore: kind === 'hole' };
+  N.toolpaths({ stock: { top: 0 }, analysis: { top: 0 }, job: { finish: 'fast' }, ops: [op] });
+  // Each feed move going down: its slope (drop per length across) and how
+  // fast Z comes down at the speed the machine reaches on that circle
+  const downs = [];
+  op.moves.forEach((m, i) => {
+    const a = op.moves[i - 1];
+    // (not the feed down from a rapid's stop 1 mm above the cut)
+    if (!a || a.r || m.r || !(a.z - m.z > 1e-6)) return;
+    const across = Math.hypot(m.x - a.x, m.y - a.y), R = Math.hypot(m.x, m.y);
+    const v = across > 1e-6 && accel ? Math.min(m.f, Math.sqrt(accel * R) * 60) : m.f;
+    downs.push({ slope: (a.z - m.z) / across, zRate: (v * (a.z - m.z)) / Math.hypot(across, a.z - m.z) });
+  });
+  return { op, downs };
+}
+
+test('a narrow round hole comes down at the plunge rate, not the ramp angle', () => {
+  // 0.35 mm circle, 700 mm/s2: 940 mm/min there, so Z at the plunge rate
+  // would be steeper than 45 degrees: straight down and a lap at each depth
+  const { op, downs } = circleOp('pocket', 6.7, 12.7, 700);
+  const { plunge } = op.feeds;
+  assert.ok(downs.length && downs.every((d) => d.slope === Infinity), 'straight down');
+  assert.ok(downs.every((d) => d.zRate <= plunge + 1e-6));
+  assert.equal(downs.length, N.depthLevels(0, -12, op.feeds.stepdown).length, 'a plunge at each depth');
+  // Unknown acceleration: the feed, so a helix 0.3 mm down per mm, Z at
+  // about the plunge rate
+  const free = circleOp('pocket', 6.7, 12.7, 0);
+  const s = Math.min(free.op.feeds.plunge, free.op.feeds.feed) / free.op.feeds.feed;
+  assert.ok(free.downs.every((d) => Math.abs(d.slope - s) < 0.02 && d.zRate <= plunge * 1.01 && d.zRate > plunge * 0.9), `slopes ${free.downs.map((d) => d.slope.toFixed(2))}`);
+  // A 1 mm circle with a 6 mm bit (under half its radius) is narrow too;
+  // a 2 mm circle keeps the ramp angle
+  const tan = Math.tan((op.feeds.rampAngle * Math.PI) / 180);
+  assert.ok(circleOp('pocket', 4, 6, 0).downs.every((d) => d.slope > 2 * tan));
+  assert.ok(circleOp('pocket', 5, 6, 0).downs.every((d) => Math.abs(d.slope - tan) < 0.005));
+});
+
+test('a bore on a small circle comes down no faster than the plunge rate', () => {
+  // 13.4 mm hole after a pilot, 1/2" bit: a step-down a turn on a 0.35 mm circle
+  const { op, downs } = circleOp('hole', 6.7, 12.7, 0);
+  assert.ok(downs.length && downs.every((d) => d.zRate <= op.feeds.plunge * 1.01), `${Math.max(...downs.map((d) => d.zRate))} > ${op.feeds.plunge}`);
+});

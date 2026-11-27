@@ -190,7 +190,7 @@ export function spindleRange(settings = {}) {
 // Below this, a Spindle max is a laser's or a mistake, not a router's
 export const LOW_SPINDLE_MAX = 5000;
 
-// limits: the machine's { maxFeed, maxPlunge, maxRpm, minRpm }. The
+// limits: the machine's { maxFeed, maxPlunge, maxRpm, minRpm, accel }. The
 // finish then scales the feed, the depth per pass and the stepover; no pass
 // goes deeper than the flutes, when the Tool Library gives their length.
 export function feeds(tool, material, finish, limits = {}) {
@@ -208,6 +208,8 @@ export function feeds(tool, material, finish, limits = {}) {
     stepdown: fluteMm ? Math.min(stepdown, fluteMm) : stepdown,
     stepover: Math.max(0.05, tool.diameter * Math.min(0.9, m.stepover * f.stepover)),
     rampAngle: m.ramp,
+    // The machine's X/Y acceleration (mm/s2), when known: small circles
+    ...(limits.accel > 0 ? { accel: limits.accel } : {}),
   };
 }
 
