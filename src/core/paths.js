@@ -110,18 +110,63 @@ function walk(path, loop, s0, s1, z, f, tab) {
   }
 }
 
+// A loop that is a circle, as { R } (its radius), else null
+function circle(loop) {
+  const n = loop.p.length;
+  if (n < 6) return null;
+  // Its middle: the centroid of its area (corners aren't evenly spaced)
+  let a = 0, cx = 0, cy = 0;
+  for (let i = 0; i < n; i++) {
+    const [x0, y0] = loop.p[i], [x1, y1] = loop.p[(i + 1) % n], w = x0 * y1 - x1 * y0;
+    a += w; cx += (x0 + x1) * w; cy += (y0 + y1) * w;
+  }
+  if (Math.abs(a) < 1e-12) return null;
+  cx /= 3 * a; cy /= 3 * a;
+  let lo = Infinity, hi = 0;
+  for (const [x, y] of loop.p) { const d = Math.hypot(x - cx, y - cy); lo = Math.min(lo, d); hi = Math.max(hi, d); }
+  return hi - lo <= Math.max(0.02, hi * 0.1) ? { R: (lo + hi) / 2 } : null;
+}
+
+// How steep (drop per length) to come down along a loop. A circle of a
+// radius under half the bit's: the bit's bottom covers its middle all the
+// way down, so it's plunging and the ramp angle only slows it (a small
+// circle can't be run at the feed either: the machine's acceleration caps
+// it near sqrt(a * R)). Its slope brings Z down at the plunge rate (never
+// faster than the feed) at the speed the machine reaches on it (fd.accel,
+// mm/s2, from $120/$121; the feed when unknown). Others: the ramp angle.
+function entrySlope(loop, r, fd) {
+  const ramp = Math.tan((fd.rampAngle * Math.PI) / 180);
+  const c = r > 0 && fd.plunge > 0 && fd.feed > 0 ? circle(loop) : null;
+  if (!c || !(c.R > 0 && c.R < r / 2)) return ramp;
+  return Math.max(ramp, Math.min(fd.plunge, fd.feed) / reachable(c.R, fd));
+}
+
+// The speed (mm/min) the machine reaches on a circle of radius R
+function reachable(R, fd) {
+  return fd.accel > 0 ? Math.min(fd.feed, Math.sqrt(fd.accel * R) * 60) : fd.feed;
+}
+
+// The feed along a slope (drop per length) that lowers Z no faster than
+// the plunge rate
+function slopeFeed(slope, fd) {
+  return Math.max(1, Math.min(fd.feed, Math.round((fd.plunge * Math.sqrt(1 + slope * slope)) / slope)));
+}
+
 // Down from zFrom to zTo along the loop, then one full lap at zTo.
-// Returns where on the loop the lap ended.
-function rampAndLap(path, loop, start, zFrom, zTo, fd, tab) {
-  const rampLen = Math.max(0, (zFrom - zTo) / Math.tan((fd.rampAngle * Math.PI) / 180));
-  if (loop.length < 1 || rampLen < 1e-6) {
+// Returns where on the loop the lap ended. r: the tool's radius.
+function rampAndLap(path, loop, start, zFrom, zTo, fd, tab, r = 0) {
+  const ramp = Math.tan((fd.rampAngle * Math.PI) / 180), slope = entrySlope(loop, r, fd);
+  const rampLen = Math.max(0, (zFrom - zTo) / slope);
+  // Steeper than 45 degrees: straight down, then the lap
+  if (loop.length < 1 || rampLen < 1e-6 || slope > 1) {
     const [x, y] = loop.at(start);
-    path.feed(x, y, tab && tab.inside(start) ? Math.max(zTo, tab.top) : zTo, fd.plunge);
+    path.feed(x, y, tab && tab.inside(start) ? Math.max(zTo, tab.top) : zTo, slope > 1 ? Math.min(fd.plunge, fd.feed) : fd.plunge);
     walk(path, loop, start, start + loop.length, () => zTo, fd.feed, tab);
     return start;
   }
   const end = start + rampLen;
-  walk(path, loop, start, end, (s) => zFrom - ((s - start) / rampLen) * (zFrom - zTo), Math.min(fd.feed, fd.plunge * 2), tab);
+  const f = slope > ramp * 1.001 ? slopeFeed(slope, fd) : Math.min(fd.feed, fd.plunge * 2);
+  walk(path, loop, start, end, (s) => zFrom - ((s - start) / rampLen) * (zFrom - zTo), f, tab);
   walk(path, loop, end, end + loop.length, () => zTo, fd.feed, tab);
   return end;
 }
@@ -196,7 +241,7 @@ function pocket(path, region, r, fd, zTop, zBottom, allowance, lift = null, entr
       let [sx, sy] = loop.at(0);
       path.goTo(sx, sy, Math.max(zFrom, entry ? entry(sx, sy) : zFrom));
       path.feed(sx, sy, zFrom, fd.plunge);
-      let end = rampAndLap(path, loop, 0, zFrom, z, fd);
+      let end = rampAndLap(path, loop, 0, zFrom, z, fd, null, r);
       for (let i = 1; i < chain.length; i++) {
         const from = loop.at(end);
         const next = new Loop(chain[i]);
@@ -423,9 +468,13 @@ function bore(path, centers, r, fd, zTop, zBottom) {
     path.goTo(c.x, c.y, zTop);
     path.feed(c.x, c.y, zTop, fd.plunge);
     path.feed(c.x + R, c.y, zTop, fd.feed);
+    // On a small circle the helix is steep: Z no faster than the plunge
+    // rate (the machine, slower there anyway, keeps it under that)
+    const slope = (zTop - zBottom) / turns / (2 * Math.PI * R);
+    const f = R > 1e-6 ? slopeFeed(slope, fd) : Math.min(fd.plunge, fd.feed);
     for (let k = 1; k <= (turns + 1) * seg; k++) {
       const a = (2 * Math.PI * k) / seg, z = Math.max(zBottom, zTop - ((zTop - zBottom) * k) / (turns * seg));
-      path.feed(c.x + R * Math.cos(a), c.y + R * Math.sin(a), z, fd.feed);
+      path.feed(c.x + R * Math.cos(a), c.y + R * Math.sin(a), z, k > turns * seg ? fd.feed : f);
     }
     path.feed(c.x, c.y, zBottom, fd.feed);
     path.retract();
@@ -504,7 +553,7 @@ function cutout(path, footprint, r, fd, zTop, zBottom, job, allowance) {
         let s = 0, zFrom = zTop;
         const levels = pass.finish ? depthLevels(zTop, zBottom, Math.max(fd.stepdown, Math.min(3 * 2 * r, zTop - zBottom))) : depthLevels(zTop, zBottom, fd.stepdown);
         for (const z of levels) {
-          s = rampAndLap(path, loop, s, zFrom, z, pass.fd, tab);
+          s = rampAndLap(path, loop, s, zFrom, z, pass.fd, tab, r);
           zFrom = z;
         }
         path.retract();

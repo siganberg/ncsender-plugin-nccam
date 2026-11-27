@@ -124,6 +124,9 @@ export function mountApp(root, host, engine) {
     const val = (k) => { const v = parseFloat(fs[k]?.value); return Number.isFinite(v) && v > 0 ? v : null; };
     S.limits = { ...N.spindleRange(fs), maxFeed: Math.min(val('110') || Infinity, val('111') || Infinity, Infinity), maxPlunge: val('112') || undefined };
     if (!Number.isFinite(S.limits.maxFeed)) delete S.limits.maxFeed;
+    // The slower of the X and Y accelerations ($120/$121, mm/s2): what a small circle can run at
+    const accel = Math.min(val('120') || Infinity, val('121') || Infinity);
+    if (Number.isFinite(accel)) S.limits.accel = accel;
     S.maxRapid = Math.min(val('110') || 5000, val('111') || 5000);
     if (val('130') && val('131')) S.travel = { x: val('130'), y: val('131'), z: val('132') };
     S.connected = !!state?.machineState?.connected;
